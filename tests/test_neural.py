@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gzip
 import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -218,6 +220,135 @@ class TorchNeuralTests(unittest.TestCase):
             self.database,
         )
         verify_certificate(certificate, self.database)
+
+    def test_scale_resume_matches_uninterrupted_training(self) -> None:
+        import torch
+
+        from neural_prover.model import ProofTransformer
+        from neural_prover.scale_train import (
+            ScaleTrainingConfig,
+            train_scale_model,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus"
+            corpus.mkdir()
+            tokenizer = MetamathTokenizer.from_database(self.database)
+            tokenizer.save(corpus / "tokenizer.json")
+            state = [
+                tokenizer.bos_id,
+                tokenizer.token_to_id["<STATE>"],
+                tokenizer.token_to_id["<NO_HYP>"],
+                tokenizer.token_to_id["<END_STATE>"],
+                tokenizer.eos_id,
+            ]
+            action = [
+                tokenizer.bos_id,
+                tokenizer.token_to_id["<ACTION>"],
+                tokenizer.token_to_id["<ASSUMPTION>"],
+                tokenizer.token_to_id["<END_ACTION>"],
+                tokenizer.eos_id,
+            ]
+            shards: dict[str, list[dict]] = {}
+            for split in ("train", "validation", "test"):
+                split_directory = corpus / split
+                split_directory.mkdir()
+                shard = split_directory / "part-00000.jsonl.gz"
+                with gzip.open(
+                    shard, "wt", encoding="utf-8"
+                ) as stream:
+                    for index in range(8):
+                        record = {
+                            "id": f"{split}-{index}",
+                            "state": [
+                                *state[:-1],
+                                tokenizer.token_to_id[
+                                    "implies"
+                                    if index % 2 else "="
+                                ],
+                                state[-1],
+                            ],
+                            "action": action,
+                            "value": (index + 1) / 10,
+                        }
+                        stream.write(json.dumps(record) + "\n")
+                shards[split] = [{
+                    "path": str(shard.relative_to(corpus)),
+                    "records": 8,
+                    "bytes": shard.stat().st_size,
+                }]
+            (corpus / "manifest.json").write_text(
+                json.dumps({
+                    "configuration": {
+                        "max_state_tokens": 8,
+                        "max_action_tokens": 8,
+                    },
+                    "shards": shards,
+                }),
+                encoding="utf-8",
+            )
+            common = dict(
+                max_steps=4,
+                micro_batch_size=1,
+                gradient_accumulation_steps=1,
+                learning_rate=1e-3,
+                warmup_steps=1,
+                device="cpu",
+                d_model=16,
+                nhead=4,
+                encoder_layers=1,
+                decoder_layers=1,
+                dim_feedforward=32,
+                dropout=0.2,
+                gradient_checkpointing=False,
+                initial_context_tokens=8,
+                context_warmup_steps=1,
+                shuffle_buffer=3,
+                checkpoint_every=1,
+                validation_batches=1,
+                require_long_context_step=False,
+                long_context_threshold=2,
+                enforce_scale_parameter_range=False,
+            )
+            continuous_output = root / "continuous"
+            continuous = train_scale_model(
+                corpus,
+                continuous_output,
+                ScaleTrainingConfig(**common),
+            )
+            resumed_output = root / "resumed"
+            paused = train_scale_model(
+                corpus,
+                resumed_output,
+                ScaleTrainingConfig(**common, run_steps=2),
+            )
+            self.assertEqual(paused["status"], "paused")
+            resumed = train_scale_model(
+                corpus,
+                resumed_output,
+                ScaleTrainingConfig(**common),
+                resume_from=resumed_output / "latest.pt",
+            )
+            uninterrupted_model, _ = (
+                ProofTransformer.load_checkpoint(
+                    continuous_output / "final.pt"
+                )
+            )
+            resumed_model, _ = ProofTransformer.load_checkpoint(
+                resumed_output / "final.pt"
+            )
+            for name, expected in uninterrupted_model.state_dict().items():
+                self.assertTrue(
+                    torch.equal(expected, resumed_model.state_dict()[name]),
+                    name,
+                )
+            self.assertEqual(resumed["train_examples_seen"], 4)
+            self.assertEqual(len(resumed["history"]), 4)
+            self.assertEqual(
+                [item["loss"] for item in continuous["history"]],
+                [item["loss"] for item in resumed["history"]],
+            )
 
 
 if __name__ == "__main__":

@@ -193,6 +193,15 @@ def build_parser() -> argparse.ArgumentParser:
     scale_train.add_argument("output")
     scale_train.add_argument("--resume")
     scale_train.add_argument("--max-steps", type=int, default=100)
+    scale_train.add_argument(
+        "--run-steps",
+        type=int,
+        default=0,
+        help=(
+            "stop after this many steps in the current invocation while "
+            "preserving the max-steps schedule"
+        ),
+    )
     scale_train.add_argument("--micro-batch-size", type=int, default=1)
     scale_train.add_argument(
         "--gradient-accumulation-steps", type=int, default=4
@@ -464,6 +473,7 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             ScaleTrainingConfig(
                 max_steps=args.max_steps,
+                run_steps=args.run_steps,
                 micro_batch_size=args.micro_batch_size,
                 gradient_accumulation_steps=
                     args.gradient_accumulation_steps,
@@ -484,17 +494,24 @@ def main(argv: list[str] | None = None) -> int:
             ),
             resume_from=args.resume,
         )
-        print(json.dumps({
+        result = {
+            "status": summary["status"],
             "device": summary["device"],
             "parameter_count": summary["parameter_count"],
             "completed_steps": summary["completed_steps"],
-            "peak_cuda_memory_bytes":
-                summary["peak_cuda_memory_bytes"],
-            "validation": summary["validation"],
-            "long_context_training_exercised":
-                summary["long_context_training_exercised"],
-            "final_checkpoint": summary["final_checkpoint"],
-        }, ensure_ascii=False))
+        }
+        if summary["status"] == "complete":
+            result.update({
+                "peak_cuda_memory_bytes":
+                    summary["peak_cuda_memory_bytes"],
+                "validation": summary["validation"],
+                "long_context_training_exercised":
+                    summary["long_context_training_exercised"],
+                "final_checkpoint": summary["final_checkpoint"],
+            })
+        else:
+            result["resume_checkpoint"] = summary["resume_checkpoint"]
+        print(json.dumps(result, ensure_ascii=False))
         return 0
     if args.command == "evaluate-scale":
         from .scale_train import evaluate_scale_checkpoint

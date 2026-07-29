@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  symbolic:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -18,4 +18,101 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
-      - run: python -m pytest
+      - run: >-
+          python -m pytest tests/test_core.py tests/test_quality.py
+          tests/test_number_theory.py
+
+  neural-cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: >-
+          python -m pip install --index-url
+          https://download.pytorch.org/whl/cpu torch==2.5.1+cpu
+      - run: python -m pip install -e ".[dev,neural]"
+      - run: python -m pytest tests/test_neural.py
+
+  multiprocessing-smoke:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e .
+      - run: >-
+          python -m neural_prover build-corpus
+          formal/peano-number-theory.mm ci-base
+          --seeds 7,11,19,23 --steps-per-seed 500
+          --max-state-tokens 128 --max-action-tokens 128
+      - run: >-
+          python -m neural_prover build-scale-corpus
+          formal/peano-number-theory.mm ci-base ci-scale
+          --train-examples 4 --validation-examples 2 --test-examples 2
+          --shard-size 2 --max-state-tokens 128 --max-action-tokens 128
+          --workers 2 --kernel-validation-interval 1
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip build
+      - run: python -m build
+      - name: Check wheel data files
+        run: |
+          python - <<'PY'
+          import glob
+          import zipfile
+
+          wheel = glob.glob("dist/*.whl")
+          assert len(wheel) == 1, wheel
+          with zipfile.ZipFile(wheel[0]) as archive:
+              names = archive.namelist()
+          assert any(name.endswith("/formal/peano.mm") for name in names)
+          assert any(name.endswith("/docs/architecture.md") for name in names)
+          PY
+      - run: python -m pip install dist/*.whl
+      - run: metamath-generate --help
+      - run: peano-neural-prover --help
+
+  external-verifier:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e .
+      - run: >-
+          python tools/external_verify_smoke.py
+          formal/peano.mm external-smoke.mm
+      - name: Build official metamath-exe
+        run: |
+          git init metamath-exe
+          git -C metamath-exe remote add origin \
+            https://github.com/metamath/metamath-exe.git
+          git -C metamath-exe fetch --depth 1 origin \
+            69a5d47fc755c21c125453407270cc26857d51b5
+          git -C metamath-exe checkout FETCH_HEAD
+          cd metamath-exe/src
+          gcc m*.c -O2 -o ../../metamath
+      - name: Cross-verify generated certificate
+        run: |
+          printf 'verify proof *\nexit\n' |
+            ./metamath external-smoke.mm | tee metamath-verification.log
+          grep -q "All proofs in the database were verified" \
+            metamath-verification.log

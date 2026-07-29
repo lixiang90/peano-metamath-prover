@@ -69,9 +69,19 @@ class Theorem:
     d_constraints: set[tuple[str, str]] = field(default_factory=set)
     proof: Proof | None = None
     variable_types: dict[str, str] = field(default_factory=dict)
+    # Variables and distinct-variable conditions needed only while replaying
+    # the proof.  They are deliberately separate from the mandatory
+    # variables/conditions of the theorem statement.
+    proof_variable_types: dict[str, str] = field(default_factory=dict)
+    proof_d_constraints: set[tuple[str, str]] = field(default_factory=set)
     floating: tuple[Hypothesis, ...] = ()
     kind: str = "generated"
     source_tokens: tuple[str, ...] = ()
+    # Source-order and scope metadata used by the independent verifier.
+    # Generated in-memory certificates use -1 and derive a virtual position
+    # after the parsed database.
+    declaration_index: int = -1
+    active_hypothesis_labels: frozenset[str] = frozenset()
     id: int | None = None
 
     @property
@@ -116,6 +126,9 @@ class Database:
     statements: dict[str, Theorem] = field(default_factory=dict)
     floating_hypotheses: dict[str, Hypothesis] = field(default_factory=dict)
     essential_hypotheses: dict[str, Hypothesis] = field(default_factory=dict)
+    # Global lookup remains useful for diagnostics, but verification must
+    # additionally consult source order and the theorem-local active scope.
+    label_order: dict[str, int] = field(default_factory=dict)
     d_declarations: list[set[tuple[str, str]]] = field(default_factory=list)
     source_path: str | None = None
 

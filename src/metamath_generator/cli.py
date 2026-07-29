@@ -19,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("database", help="input .mm file")
     parser.add_argument(
         "--mode",
-        choices=["random", "forward", "depth"],
+        choices=["random", "forward"],
         default="random",
     )
     parser.add_argument("--steps", type=int, default=5_000)

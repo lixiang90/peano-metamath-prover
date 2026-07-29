@@ -370,12 +370,14 @@ class TheoremGenerator(_CompositionEngine):
 
     def generate(
         self,
-        mode: Literal["random", "forward", "depth"] = "random",
+        mode: Literal["random", "forward"] = "random",
         steps: int = 100,
     ) -> list[Theorem]:
         if mode == "forward":
             return self.forward_saturation(steps)
-        return self.random_walk(steps)
+        if mode == "random":
+            return self.random_walk(steps)
+        raise ValueError(f"unsupported generation mode: {mode}")
 
     def categorized(
         self,

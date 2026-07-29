@@ -25,20 +25,53 @@ def verify(theorem: Theorem, database: Database) -> None:
     if labels[0] == "(":
         raise VerificationError("compressed proofs are not supported by this verifier")
 
+    if theorem.declaration_index >= 0:
+        proof_position = theorem.declaration_index
+        visible_hypotheses = theorem.active_hypothesis_labels
+    else:
+        # Generated certificates are verified as if appended after the
+        # parsed database.  Only hypotheses explicitly attached to the
+        # certificate are active in its local scope.
+        proof_position = max(database.label_order.values(), default=-1) + 1
+        visible_hypotheses = frozenset([
+            *(hypothesis.label for hypothesis in theorem.floating),
+            *(hypothesis.label for hypothesis in theorem.hypotheses),
+        ])
+
     stack: list[Node] = []
-    active_d = theorem.d_constraints
+    active_d = theorem.d_constraints | theorem.proof_d_constraints
     for label in labels:
         floating = database.floating_hypotheses.get(label)
         if floating is not None:
+            if label not in visible_hypotheses:
+                raise VerificationError(
+                    f"floating hypothesis {label!r} is not active "
+                    f"for {theorem.name}"
+                )
             stack.append(floating.expr)
             continue
         essential = database.essential_hypotheses.get(label)
         if essential is not None:
+            if label not in visible_hypotheses:
+                raise VerificationError(
+                    f"essential hypothesis {label!r} is not active "
+                    f"for {theorem.name}"
+                )
             stack.append(essential.expr)
             continue
         assertion = database.statements.get(label)
         if assertion is None:
             raise VerificationError(f"unknown proof label {label!r}")
+        assertion_position = (
+            assertion.declaration_index
+            if assertion.declaration_index >= 0
+            else database.label_order.get(label, -1)
+        )
+        if assertion_position < 0 or assertion_position >= proof_position:
+            raise VerificationError(
+                f"assertion {label!r} is not declared before "
+                f"{theorem.name}"
+            )
         hypotheses = [*assertion.floating, *assertion.hypotheses]
         if len(stack) < len(hypotheses):
             raise VerificationError(f"stack underflow while applying {label}")

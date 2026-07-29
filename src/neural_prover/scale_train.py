@@ -20,6 +20,10 @@ from .tokenizer import MetamathTokenizer
 @dataclass(frozen=True, slots=True)
 class ScaleTrainingConfig:
     max_steps: int = 100
+    # Optional per-invocation limit used for controlled interruption.  The
+    # learning-rate schedule still targets max_steps, so resuming is exactly
+    # equivalent to an uninterrupted run.
+    run_steps: int = 0
     micro_batch_size: int = 1
     gradient_accumulation_steps: int = 4
     learning_rate: float = 1.0e-4
@@ -44,6 +48,7 @@ class ScaleTrainingConfig:
     validation_batches: int = 4
     require_long_context_step: bool = True
     long_context_threshold: int = 2048
+    enforce_scale_parameter_range: bool = True
 
 
 def _device(requested: str) -> torch.device:
@@ -101,6 +106,76 @@ def _shuffled_records(
             buffer[index], buffer[-1] = buffer[-1], buffer[index]
             yield buffer.pop()
         epoch += 1
+
+
+class _ResumableRecordStream:
+    """Deterministic record stream recoverable from an exact raw offset."""
+
+    def __init__(
+        self,
+        corpus: Path,
+        split: str,
+        seed: int,
+        buffer_size: int,
+        consumed: int = 0,
+    ) -> None:
+        self._iterator = _shuffled_records(
+            corpus,
+            split,
+            seed,
+            buffer_size,
+        )
+        self.consumed = 0
+        for _ in range(consumed):
+            next(self._iterator)
+            self.consumed += 1
+
+    def __iter__(self) -> "_ResumableRecordStream":
+        return self
+
+    def __next__(self) -> dict:
+        record = next(self._iterator)
+        self.consumed += 1
+        return record
+
+
+def _rng_state() -> dict:
+    return {
+        "python": random.getstate(),
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": (
+            torch.cuda.get_rng_state_all()
+            if torch.cuda.is_available() else []
+        ),
+    }
+
+
+def _restore_rng_state(state: dict | None) -> None:
+    if not state:
+        return
+    random.setstate(state["python"])
+    torch.set_rng_state(state["torch_cpu"].cpu())
+    if torch.cuda.is_available() and state.get("torch_cuda"):
+        torch.cuda.set_rng_state_all([
+            item.cpu() for item in state["torch_cuda"]
+        ])
+
+
+def _trajectory_configuration(config: ScaleTrainingConfig) -> dict:
+    """Return settings that must match for bit-exact continuation."""
+
+    ignored = {
+        "run_steps",
+        "device",
+        "checkpoint_every",
+        "validation_batches",
+        "enforce_scale_parameter_range",
+    }
+    return {
+        key: value
+        for key, value in asdict(config).items()
+        if key not in ignored
+    }
 
 
 def _pad(sequences: list[list[int]], pad_id: int) -> Tensor:
@@ -284,6 +359,10 @@ def train_scale_model(
         raise ValueError("micro_batch_size must be positive")
     if cfg.gradient_accumulation_steps <= 0:
         raise ValueError("gradient_accumulation_steps must be positive")
+    if cfg.checkpoint_every <= 0:
+        raise ValueError("checkpoint_every must be positive")
+    if cfg.run_steps < 0:
+        raise ValueError("run_steps must be non-negative")
     _seed_everything(cfg.seed)
     corpus = Path(corpus_directory)
     output = Path(output_directory)
@@ -322,6 +401,7 @@ def train_scale_model(
     )
     start_step = 0
     resume_payload: dict | None = None
+    resume_state: dict = {}
     if resume_from is not None:
         model, resume_payload = ProofTransformer.load_checkpoint(
             resume_from,
@@ -336,10 +416,51 @@ def train_scale_model(
             .get("training_state", {})
             .get("step", 0)
         )
+        resume_state = (
+            resume_payload.get("metadata", {})
+            .get("training_state", {})
+        )
+        saved_configuration = (
+            resume_payload.get("metadata", {})
+            .get("trajectory_configuration")
+        )
+        required_resume_fields = {
+            "step",
+            "scheduler_state",
+            "train_records_consumed",
+            "rng_state",
+            "history",
+            "train_examples_seen",
+            "target_tokens_seen",
+            "elapsed_seconds",
+        }
+        missing_resume_fields = (
+            required_resume_fields - set(resume_state)
+        )
+        if (
+            missing_resume_fields
+            or saved_configuration is None
+            or not resume_payload.get("optimizer_state")
+        ):
+            raise ValueError(
+                "checkpoint does not contain the exact-resume state: "
+                + ", ".join(sorted(missing_resume_fields))
+            )
+        if saved_configuration != _trajectory_configuration(cfg):
+            raise ValueError(
+                "resume checkpoint trajectory configuration does not match"
+            )
+        if start_step > cfg.max_steps:
+            raise ValueError(
+                "resume checkpoint is beyond configured max_steps"
+            )
     else:
         model = ProofTransformer(model_config)
     parameter_count = model.parameter_count()
-    if not 80_000_000 <= parameter_count <= 130_000_000:
+    if (
+        cfg.enforce_scale_parameter_range
+        and not 80_000_000 <= parameter_count <= 130_000_000
+    ):
         raise ValueError(
             "scale architecture is outside the intended 100M class: "
             f"{parameter_count:,} parameters"
@@ -371,26 +492,41 @@ def train_scale_model(
         )
         if scheduler_state:
             scheduler.load_state_dict(scheduler_state)
-    train_records = _shuffled_records(
+    train_records = _ResumableRecordStream(
         corpus,
         "train",
         cfg.seed,
         cfg.shuffle_buffer,
+        int(resume_state.get("train_records_consumed", 0)),
     )
-    validation_records = _shuffled_records(
+    validation_records = _ResumableRecordStream(
         corpus,
         "validation",
         cfg.seed + 17,
         max(1, min(cfg.shuffle_buffer, 512)),
     )
+    _restore_rng_state(resume_state.get("rng_state"))
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
     started = time.perf_counter()
-    history: list[dict] = []
-    total_examples = 0
-    total_target_tokens = 0
+    prior_elapsed = float(
+        resume_state.get("elapsed_seconds", 0.0)
+    )
+    history: list[dict] = list(
+        resume_state.get("history", [])
+    )
+    total_examples = int(
+        resume_state.get("train_examples_seen", 0)
+    )
+    total_target_tokens = int(
+        resume_state.get("target_tokens_seen", 0)
+    )
     latest_path = output / "latest.pt"
-    for step in range(start_step, cfg.max_steps):
+    end_step = (
+        min(cfg.max_steps, start_step + cfg.run_steps)
+        if cfg.run_steps > 0 else cfg.max_steps
+    )
+    for step in range(start_step, end_step):
         optimizer.zero_grad(set_to_none=True)
         limit = _context_limit(step, maximum_context, cfg)
         step_loss = 0.0
@@ -459,7 +595,7 @@ def train_scale_model(
         scheduler.step()
         total_examples += step_examples
         total_target_tokens += step_tokens
-        elapsed = time.perf_counter() - started
+        elapsed = prior_elapsed + time.perf_counter() - started
         record = {
             "step": step + 1,
             "context_limit": limit,
@@ -480,12 +616,18 @@ def train_scale_model(
         history.append(record)
         should_checkpoint = (
             (step + 1) % cfg.checkpoint_every == 0
-            or step + 1 == cfg.max_steps
+            or step + 1 == end_step
         )
         if should_checkpoint:
             training_state = {
                 "step": step + 1,
                 "scheduler_state": scheduler.state_dict(),
+                "train_records_consumed": train_records.consumed,
+                "rng_state": _rng_state(),
+                "history": history,
+                "train_examples_seen": total_examples,
+                "target_tokens_seen": total_target_tokens,
+                "elapsed_seconds": elapsed,
             }
             model.save_checkpoint(
                 latest_path,
@@ -494,6 +636,8 @@ def train_scale_model(
                     "training_state": training_state,
                     "latest_metrics": record,
                     "parameter_count": parameter_count,
+                    "trajectory_configuration":
+                        _trajectory_configuration(cfg),
                     "tokenizer": str(
                         (corpus / "tokenizer.json").resolve()
                     ),
@@ -507,6 +651,25 @@ def train_scale_model(
                 "parameter_count": parameter_count,
                 "history": history,
             })
+    if end_step < cfg.max_steps:
+        elapsed = prior_elapsed + time.perf_counter() - started
+        summary = {
+            "format": "peano-scale-training-v1",
+            "status": "paused",
+            "device": str(device),
+            "configuration": asdict(cfg),
+            "model_configuration": asdict(model_config),
+            "parameter_count": parameter_count,
+            "start_step": start_step,
+            "completed_steps": end_step,
+            "train_examples_seen": total_examples,
+            "target_tokens_seen": total_target_tokens,
+            "elapsed_seconds": elapsed,
+            "history": history,
+            "resume_checkpoint": str(latest_path.resolve()),
+        }
+        _write_metrics(output, summary)
+        return summary
     validation = _evaluate(
         model,
         validation_records,
@@ -515,18 +678,31 @@ def train_scale_model(
         cfg,
         maximum_context,
     )
-    elapsed = time.perf_counter() - started
+    elapsed = prior_elapsed + time.perf_counter() - started
     peak_memory = (
         int(torch.cuda.max_memory_allocated(device))
         if device.type == "cuda" else 0
     )
     final_path = output / "final.pt"
+    final_training_state = {
+        "step": cfg.max_steps,
+        "scheduler_state": scheduler.state_dict(),
+        "train_records_consumed": train_records.consumed,
+        "rng_state": _rng_state(),
+        "history": history,
+        "train_examples_seen": total_examples,
+        "target_tokens_seen": total_target_tokens,
+        "elapsed_seconds": elapsed,
+    }
     model.save_checkpoint(
         final_path,
+        optimizer_state=optimizer.state_dict(),
         metadata={
-            "training_state": {"step": cfg.max_steps},
+            "training_state": final_training_state,
             "validation": validation,
             "parameter_count": parameter_count,
+            "trajectory_configuration":
+                _trajectory_configuration(cfg),
             "tokenizer": str(
                 (corpus / "tokenizer.json").resolve()
             ),

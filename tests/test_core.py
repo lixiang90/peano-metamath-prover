@@ -18,7 +18,7 @@ from metamath_generator.unification import (
     substitute,
     unify,
 )
-from metamath_generator.verifier import verify
+from metamath_generator.verifier import VerificationError, verify
 
 ROOT = Path(__file__).resolve().parents[1]
 PEANO = ROOT / "formal" / "peano.mm"
@@ -102,6 +102,54 @@ class UnificationTests(unittest.TestCase):
     def test_occurs_check(self) -> None:
         with self.assertRaises(OccursCheckError):
             unify(Node("?x"), Node("S", (Node("?x"),)))
+
+
+class VerifierVisibilityTests(unittest.TestCase):
+    def test_rejects_future_assertion_reference(self) -> None:
+        database = MetamathParser().parse_text(
+            "$c |- wff $. $v ph $. wph $f wff ph $. "
+            "bad $p |- ph $= wph later $. "
+            "later $a |- ph $."
+        )
+        with self.assertRaisesRegex(
+            VerificationError, "not declared before"
+        ):
+            verify(database.statements["bad"], database)
+
+    def test_rejects_hypothesis_after_scope_exit(self) -> None:
+        database = MetamathParser().parse_text(
+            "$c |- wff $. $v ph $. wph $f wff ph $. "
+            "${ h $e |- ph $. inside $a |- ph $. $} "
+            "bad $p |- ph $= h $."
+        )
+        with self.assertRaisesRegex(VerificationError, "not active"):
+            verify(database.statements["bad"], database)
+
+    def test_rejects_floating_hypothesis_after_scope_exit(self) -> None:
+        database = MetamathParser().parse_text(
+            "$c wff $. $v ph ps $. "
+            "${ wph $f wff ph $. inside $a wff ph $. $} "
+            "wps $f wff ps $. bad $p wff ps $= wph $."
+        )
+        with self.assertRaisesRegex(VerificationError, "not active"):
+            verify(database.statements["bad"], database)
+
+    def test_rejects_self_reference(self) -> None:
+        database = MetamathParser().parse_text(
+            "$c |- wff $. $v ph $. wph $f wff ph $. "
+            "bad $p |- ph $= wph bad $."
+        )
+        with self.assertRaisesRegex(
+            VerificationError, "not declared before"
+        ):
+            verify(database.statements["bad"], database)
+
+    def test_accepts_currently_active_hypothesis(self) -> None:
+        database = MetamathParser().parse_text(
+            "$c |- wff $. $v ph $. wph $f wff ph $. "
+            "${ h $e |- ph $. good $p |- ph $= h $. $}"
+        )
+        verify(database.statements["good"], database)
 
 
 class CompositionTests(unittest.TestCase):
@@ -202,6 +250,42 @@ class IntegrationTests(unittest.TestCase):
             self.assertGreater(len(generated_statements), 0)
             for theorem in generated_statements:
                 verify(theorem, exported)
+
+    def test_export_declares_variables_used_only_by_proof(self) -> None:
+        source = (
+            PEANO.read_text(encoding="utf-8")
+            + "\n"
+            + "$v a b $. ta $f term a $. tb $f term b $. "
+            + "proof-minor $a |- = a a $. "
+            + "proof-major $a |- implies = a a and = b b = b b $.\n"
+        )
+        parsed = MetamathParser().parse_text(source)
+        store = TheoremDatabase.from_parsed(parsed)
+        generated = compose(
+            parsed.statements["ax-mp"],
+            [
+                store.get_by_name("eq-refl"),
+                store.get_by_name("proof-major"),
+            ],
+            name="proof-variable-closure",
+            database=parsed,
+        )
+        theorem_id, added = store.add(generated)
+        self.assertTrue(added)
+        generated = store[theorem_id]
+        self.assertEqual(len(generated.variable_types), 1)
+        self.assertEqual(len(generated.proof_variable_types), 2)
+
+        with tempfile.TemporaryDirectory() as directory:
+            fragment = Path(directory) / "proof-closure.mm"
+            export_metamath(generated, store, fragment)
+            exported = MetamathParser().parse_text(
+                source + "\n" + fragment.read_text(encoding="utf-8")
+            )
+            verify(
+                exported.statements["proof-variable-closure"],
+                exported,
+            )
 
 
 if __name__ == "__main__":

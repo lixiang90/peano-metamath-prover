@@ -9,7 +9,10 @@ from .model import Database, Hypothesis, Node, Proof, Theorem, normalized_pair
 
 def _canonicalize(theorem: Theorem) -> tuple[Theorem, tuple]:
     renaming: dict[str, str] = {}
-    known = theorem.variable_types
+    known = {
+        **theorem.proof_variable_types,
+        **theorem.variable_types,
+    }
 
     def visit(node: Node) -> Node:
         replacement = (
@@ -28,14 +31,9 @@ def _canonicalize(theorem: Theorem) -> tuple[Theorem, tuple]:
     for pair in sorted(theorem.d_constraints):
         for variable in pair:
             renaming.setdefault(variable, f"v{len(renaming)}")
-    constraints = {
-        normalized_pair(renaming[a], renaming[b])
-        for a, b in theorem.d_constraints
-    }
-    variable_types = {
-        replacement: theorem.variable_types[original]
-        for original, replacement in renaming.items()
-    }
+    for pair in sorted(theorem.proof_d_constraints):
+        for variable in pair:
+            renaming.setdefault(variable, f"v{len(renaming)}")
     proof = theorem.proof
     canonical_proof = None
     if proof is not None:
@@ -49,6 +47,26 @@ def _canonicalize(theorem: Theorem) -> tuple[Theorem, tuple]:
             depth=proof.depth,
             source_labels=proof.source_labels,
         )
+    for variable in theorem.variable_types:
+        renaming.setdefault(variable, f"v{len(renaming)}")
+    for variable in theorem.proof_variable_types:
+        renaming.setdefault(variable, f"v{len(renaming)}")
+    constraints = {
+        normalized_pair(renaming[a], renaming[b])
+        for a, b in theorem.d_constraints
+    }
+    proof_constraints = {
+        normalized_pair(renaming[a], renaming[b])
+        for a, b in theorem.proof_d_constraints
+    }
+    variable_types = {
+        renaming[original]: typecode
+        for original, typecode in theorem.variable_types.items()
+    }
+    proof_variable_types = {
+        renaming[original]: typecode
+        for original, typecode in theorem.proof_variable_types.items()
+    }
     canonical = Theorem(
         name=theorem.name,
         hypotheses=hypotheses,
@@ -56,9 +74,16 @@ def _canonicalize(theorem: Theorem) -> tuple[Theorem, tuple]:
         d_constraints=constraints,
         proof=canonical_proof,
         variable_types=variable_types,
-        floating=theorem.floating,
+        proof_variable_types=proof_variable_types,
+        proof_d_constraints=proof_constraints,
+        floating=tuple(
+            Hypothesis(h.label, visit(h.expr))
+            for h in theorem.floating
+        ),
         kind=theorem.kind,
         source_tokens=theorem.source_tokens,
+        declaration_index=theorem.declaration_index,
+        active_hypothesis_labels=theorem.active_hypothesis_labels,
         id=theorem.id,
     )
     key = (

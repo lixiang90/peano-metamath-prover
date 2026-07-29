@@ -130,11 +130,11 @@ class Generator:
 
     def generate(
         self,
-        mode: Literal["random", "forward", "depth"] = "random",
+        mode: Literal["random", "forward"] = "random",
         steps: int = 100,
     ) -> list[Theorem]:
         if mode == "forward":
             return self.forward_saturation(steps)
-        # Depth-limited generation uses the same walker; the configured proof
-        # depth is enforced by _valid.
-        return self.random_walk(steps)
+        if mode == "random":
+            return self.random_walk(steps)
+        raise ValueError(f"unsupported generation mode: {mode}")

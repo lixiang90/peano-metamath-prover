@@ -51,7 +51,13 @@ def theorem_record(theorem: Theorem, store: TheoremDatabase) -> dict:
         "premises": [expression_text(h.expr) for h in theorem.hypotheses],
         "conclusion": expression_text(theorem.conclusion),
         "variable_types": dict(sorted(theorem.variable_types.items())),
+        "proof_variable_types": dict(
+            sorted(theorem.proof_variable_types.items())
+        ),
         "d_constraints": [list(pair) for pair in sorted(theorem.d_constraints)],
+        "proof_d_constraints": [
+            list(pair) for pair in sorted(theorem.proof_d_constraints)
+        ],
         "proof": proof_records(theorem, store),
         "rule": proof.rule if proof else theorem.name,
         "substitution": {
@@ -187,7 +193,9 @@ def _application_proof(
             variable = floating.expr.args[0].op
             floating_order.append((variable, floating.expr.op))
     else:
-        floating_order.extend(assertion.variable_types.items())
+        # Generated assertions have no source floating-hypothesis tuple.
+        # Their export order is canonical rather than dict-insertion based.
+        floating_order.extend(sorted(assertion.variable_types.items()))
     for variable, typecode in floating_order:
         labels.extend(compiler.compile(typecode, mapping.get(variable, Node(variable))))
     for hypothesis in assertion.hypotheses:
@@ -268,20 +276,33 @@ def export_metamath(
 
     visit(theorem.id)
     variables = sorted({
-        variable for item in order for variable in item.variable_types
+        variable
+        for item in order
+        for variable in (
+            set(item.variable_types)
+            | set(item.proof_variable_types)
+        )
     })
     lines = ["$( Append this generated proof fragment to the source database. $)"]
     if variables:
         lines.append(f"$v {' '.join(variables)} $.")
     for item in order:
         lines.append("${")
+        all_variable_types = {
+            **item.proof_variable_types,
+            **item.variable_types,
+        }
         floating = {
             variable: (f"g{item.id}_f{index}", typecode)
-            for index, (variable, typecode) in enumerate(item.variable_types.items())
+            for index, (variable, typecode) in enumerate(
+                sorted(all_variable_types.items())
+            )
         }
         for variable, (label, typecode) in floating.items():
             lines.append(f"  {label} $f {typecode} {variable} $.")
-        for left, right in sorted(item.d_constraints):
+        for left, right in sorted(
+            item.d_constraints | item.proof_d_constraints
+        ):
             lines.append(f"  $d {left} {right} $.")
         for index, hypothesis in enumerate(item.hypotheses):
             lines.append(

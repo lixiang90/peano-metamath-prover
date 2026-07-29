@@ -57,6 +57,13 @@ class MetamathParser:
         self._essential: list[tuple[str, tuple[str, ...], Node]] = []
         self._d_constraints: set[tuple[str, str]] = set()
         self._scopes: list[_Scope] = []
+        self._declaration_index = 0
+
+    def _declare(self, label: str) -> int:
+        index = self._declaration_index
+        self._declaration_index += 1
+        self.database.label_order[label] = index
+        return index
 
     def parse_file(self, path: str | Path) -> Database:
         source = Path(path)
@@ -164,6 +171,7 @@ class MetamathParser:
                 self.database.types.add(typecode)
                 self.database.variable_types[variable] = typecode
                 self._floating.append((label, typecode, variable))
+                self._declare(label)
                 self.database.floating_hypotheses[label] = Hypothesis(
                     label, Node(typecode, (Node(variable),))
                 )
@@ -172,6 +180,7 @@ class MetamathParser:
                 body, i = self._until(tokens, i + 2)
                 expr = self.parse_expression(body)
                 self._essential.append((label, tuple(body), expr))
+                self._declare(label)
                 self.database.essential_hypotheses[label] = Hypothesis(label, expr)
                 continue
             if kind not in {"$a", "$p"}:
@@ -203,12 +212,14 @@ class MetamathParser:
                 self.database.add_syntax_rule(syntax)
 
             conclusion = self.parse_expression(body)
+            declaration_index = self._declare(label)
             theorem = self._make_theorem(
                 label,
                 kind,
                 tuple(body),
                 conclusion,
                 proof_tokens,
+                declaration_index,
             )
             self.database.statements[label] = theorem
             if output_type != "|-":
@@ -233,6 +244,7 @@ class MetamathParser:
         source_tokens: tuple[str, ...],
         conclusion: Node,
         proof_tokens: tuple[str, ...],
+        declaration_index: int,
     ) -> Theorem:
         active_f = {var: (flabel, typ) for flabel, typ, var in self._floating}
         used = self._variables_in_tokens(source_tokens)
@@ -264,9 +276,21 @@ class MetamathParser:
             d_constraints=d_constraints,
             proof=proof,
             variable_types={var: active_f[var][1] for var in used},
+            proof_variable_types=(
+                {var: typ for var, (_, typ) in active_f.items()}
+                if kind == "$p" else {}
+            ),
+            proof_d_constraints=(
+                set(self._d_constraints) if kind == "$p" else set()
+            ),
             floating=floating,
             kind="theorem" if kind == "$p" else "axiom",
             source_tokens=source_tokens,
+            declaration_index=declaration_index,
+            active_hypothesis_labels=frozenset([
+                *(flabel for flabel, _, _ in self._floating),
+                *(elabel for elabel, _, _ in self._essential),
+            ]),
         )
 
     def _variables_in_tokens(self, tokens: Iterable[str]) -> set[str]:

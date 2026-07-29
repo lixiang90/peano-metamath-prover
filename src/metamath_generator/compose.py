@@ -191,6 +191,7 @@ def compose(
             constraints.update(
                 _instantiate_constraints(parent.d_constraints, subst, variables)
             )
+    proof_constraints = set(constraints)
 
     conclusion = substitute(standardized_rule.conclusion, subst)
     used_variables = {
@@ -221,6 +222,14 @@ def compose(
         variable: substitute(Node(variable), subst)
         for variable in variable_types
     }
+    proof_used_variables = {
+        node.op
+        for value in total_substitution.values()
+        for node in value.walk()
+        if node.op in variables
+    }
+    for left, right in proof_constraints:
+        proof_used_variables.update((left, right))
     return Theorem(
         name=name or f"gen_{rule.name}",
         hypotheses=unique_hypotheses,
@@ -236,5 +245,10 @@ def compose(
         variable_types={
             variable: variable_types[variable] for variable in used_variables
         },
+        proof_variable_types={
+            variable: variable_types[variable]
+            for variable in proof_used_variables
+        },
+        proof_d_constraints=proof_constraints,
         kind="generated",
     )

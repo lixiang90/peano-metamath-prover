@@ -1,18 +1,17 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "peano-metamath-prover"
-version = "1.0.0"
+version = "0.9.0"
 description = "A typed theorem generator and neural-symbolic prover for peano.mm"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "GPL-3.0-only"}
+license = "GPL-3.0-only"
 authors = [{name = "Peano Metamath Prover contributors"}]
 classifiers = [
   "Development Status :: 4 - Beta",
-  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -31,6 +30,10 @@ peano-neural-prover = "neural_prover.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["metamath_generator*", "neural_prover*"]
+
+[tool.setuptools.data-files]
+"share/peano-metamath-prover/formal" = ["formal/*.mm"]
+"share/peano-metamath-prover/docs" = ["docs/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
