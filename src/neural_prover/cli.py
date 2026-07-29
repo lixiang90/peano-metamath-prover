@@ -1,0 +1,586 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+from metamath_generator.parser import parse
+
+from .benchmark import (
+    BenchmarkBuildConfig,
+    build_benchmarks,
+    load_benchmarks,
+)
+from .certificate import (
+    compile_certificate,
+    export_certificate,
+    verify_certificate,
+)
+from .data import CorpusBuildConfig, build_corpus
+from .environment import BackwardEnvironment, ProofState
+from .hybrid import HybridActionGenerator
+from .tokenizer import MetamathTokenizer
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Transformer-guided neural-symbolic Metamath prover"
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    corpus = commands.add_parser(
+        "build-corpus",
+        help="generate a leak-controlled state/action corpus",
+    )
+    corpus.add_argument("database")
+    corpus.add_argument("output")
+    corpus.add_argument("--seeds", default="7,11,19,23")
+    corpus.add_argument("--steps-per-seed", type=int, default=5_000)
+    corpus.add_argument("--max-proof-depth", type=int, default=7)
+    corpus.add_argument("--max-state-tokens", type=int, default=256)
+    corpus.add_argument("--max-action-tokens", type=int, default=192)
+
+    benchmark = commands.add_parser(
+        "build-benchmark",
+        help="build synthetic, foundational, and famous evaluations",
+    )
+    benchmark.add_argument("database")
+    benchmark.add_argument("output")
+    benchmark.add_argument("--seeds", default="101,103,107")
+    benchmark.add_argument("--steps-per-seed", type=int, default=5_000)
+    benchmark.add_argument(
+        "--synthetic-per-difficulty",
+        type=int,
+        default=20,
+    )
+
+    train = commands.add_parser(
+        "train",
+        help="supervised policy/value Transformer training",
+    )
+    train.add_argument("corpus")
+    train.add_argument("output")
+    train.add_argument("--epochs", type=int, default=12)
+    train.add_argument("--batch-size", type=int, default=32)
+    train.add_argument("--learning-rate", type=float, default=3e-4)
+    train.add_argument("--device", default="auto")
+    train.add_argument("--d-model", type=int, default=128)
+    train.add_argument("--layers", type=int, default=3)
+
+    evaluate = commands.add_parser(
+        "evaluate",
+        help="evaluate policy and certified proof search",
+    )
+    evaluate.add_argument("checkpoint")
+    evaluate.add_argument("corpus")
+    evaluate.add_argument("benchmark")
+    evaluate.add_argument("database")
+    evaluate.add_argument("output")
+    evaluate.add_argument("--device", default="auto")
+    evaluate.add_argument("--easy-sims", type=int, default=100)
+    evaluate.add_argument("--medium-sims", type=int, default=300)
+    evaluate.add_argument("--hard-sims", type=int, default=1_000)
+    evaluate.add_argument("--frontier-sims", type=int, default=100)
+
+    evaluate_mcts = commands.add_parser(
+        "evaluate-mcts",
+        help="evaluate hybrid PUCT/MCTS with certificate replay",
+    )
+    evaluate_mcts.add_argument("checkpoint")
+    evaluate_mcts.add_argument("corpus")
+    evaluate_mcts.add_argument("benchmark")
+    evaluate_mcts.add_argument("database")
+    evaluate_mcts.add_argument("output")
+    evaluate_mcts.add_argument("--device", default="auto")
+    evaluate_mcts.add_argument("--simulations", type=int, default=60)
+    evaluate_mcts.add_argument("--max-depth", type=int, default=16)
+    evaluate_mcts.add_argument("--branching", type=int, default=32)
+    evaluate_mcts.add_argument(
+        "--cases-per-difficulty", type=int, default=5
+    )
+    evaluate_mcts.add_argument(
+        "--include-frontier", action="store_true"
+    )
+    evaluate_mcts.add_argument(
+        "--origins",
+        default="",
+        help="comma-separated: synthetic,curated,foundational,famous",
+    )
+
+    prove = commands.add_parser(
+        "prove",
+        help="prove one benchmark case with hybrid PUCT/MCTS",
+    )
+    prove.add_argument("checkpoint")
+    prove.add_argument("corpus")
+    prove.add_argument("benchmark")
+    prove.add_argument("case_id")
+    prove.add_argument("database")
+    prove.add_argument("--certificate")
+    prove.add_argument("--device", default="auto")
+    prove.add_argument("--simulations", type=int, default=800)
+
+    reinforce = commands.add_parser(
+        "reinforce",
+        help="update a checkpoint from a saved MCTS replay buffer",
+    )
+    reinforce.add_argument("checkpoint")
+    reinforce.add_argument("replay")
+    reinforce.add_argument("output")
+    reinforce.add_argument("--epochs", type=int, default=3)
+    reinforce.add_argument("--learning-rate", type=float, default=1e-5)
+    reinforce.add_argument("--device", default="auto")
+
+    collect = commands.add_parser(
+        "collect-replay",
+        help="run hybrid PUCT/MCTS on training states",
+    )
+    collect.add_argument("checkpoint")
+    collect.add_argument("corpus")
+    collect.add_argument("database")
+    collect.add_argument("output")
+    collect.add_argument("--examples", type=int, default=32)
+    collect.add_argument("--simulations", type=int, default=100)
+    collect.add_argument("--max-depth", type=int, default=16)
+    collect.add_argument("--branching", type=int, default=32)
+    collect.add_argument("--device", default="auto")
+
+    audit = commands.add_parser(
+        "audit-corpus",
+        help="replay every corpus action through the typed kernel",
+    )
+    audit.add_argument("database")
+    audit.add_argument("corpus")
+    audit.add_argument("--output")
+
+    scale_audit = commands.add_parser(
+        "audit-scale-corpus",
+        help="replay a deterministic scale-corpus sample through the kernel",
+    )
+    scale_audit.add_argument("database")
+    scale_audit.add_argument("corpus")
+    scale_audit.add_argument("--output")
+    scale_audit.add_argument("--sample-size", type=int, default=10_000)
+    scale_audit.add_argument("--seed", type=int, default=20260729)
+
+    scale_corpus = commands.add_parser(
+        "build-scale-corpus",
+        help="build/resume compact sharded million-record data",
+    )
+    scale_corpus.add_argument("database")
+    scale_corpus.add_argument("base_corpus")
+    scale_corpus.add_argument("output")
+    scale_corpus.add_argument("--train-examples", type=int, default=990_000)
+    scale_corpus.add_argument(
+        "--validation-examples", type=int, default=5_000
+    )
+    scale_corpus.add_argument("--test-examples", type=int, default=5_000)
+    scale_corpus.add_argument("--shard-size", type=int, default=20_000)
+    scale_corpus.add_argument("--max-state-tokens", type=int, default=2304)
+    scale_corpus.add_argument("--max-action-tokens", type=int, default=2304)
+    scale_corpus.add_argument("--seed", type=int, default=20260729)
+    scale_corpus.add_argument("--workers", type=int, default=8)
+    scale_corpus.add_argument(
+        "--kernel-validation-interval", type=int, default=1000
+    )
+    scale_corpus.add_argument("--max-new-records", type=int, default=0)
+
+    scale_train = commands.add_parser(
+        "train-scale",
+        help="train/resume the ~100M, 2304-context scale model",
+    )
+    scale_train.add_argument("corpus")
+    scale_train.add_argument("output")
+    scale_train.add_argument("--resume")
+    scale_train.add_argument("--max-steps", type=int, default=100)
+    scale_train.add_argument("--micro-batch-size", type=int, default=1)
+    scale_train.add_argument(
+        "--gradient-accumulation-steps", type=int, default=4
+    )
+    scale_train.add_argument("--learning-rate", type=float, default=1e-4)
+    scale_train.add_argument("--warmup-steps", type=int, default=10)
+    scale_train.add_argument("--device", default="auto")
+    scale_train.add_argument("--d-model", type=int, default=768)
+    scale_train.add_argument("--nhead", type=int, default=12)
+    scale_train.add_argument("--encoder-layers", type=int, default=6)
+    scale_train.add_argument("--decoder-layers", type=int, default=6)
+    scale_train.add_argument("--dim-feedforward", type=int, default=3072)
+    scale_train.add_argument(
+        "--initial-context-tokens", type=int, default=512
+    )
+    scale_train.add_argument(
+        "--context-warmup-steps", type=int, default=50
+    )
+    scale_train.add_argument("--checkpoint-every", type=int, default=25)
+    scale_train.add_argument("--validation-batches", type=int, default=4)
+    scale_train.add_argument(
+        "--no-long-context-step", action="store_true"
+    )
+
+    scale_evaluate = commands.add_parser(
+        "evaluate-scale",
+        help="teacher-force a deterministic held-out scale sample",
+    )
+    scale_evaluate.add_argument("checkpoint")
+    scale_evaluate.add_argument("corpus")
+    scale_evaluate.add_argument("output")
+    scale_evaluate.add_argument("--split", default="test")
+    scale_evaluate.add_argument("--examples", type=int, default=256)
+    scale_evaluate.add_argument("--device", default="auto")
+    scale_evaluate.add_argument("--seed", type=int, default=20260801)
+    return parser
+
+
+def _seeds(text: str) -> tuple[int, ...]:
+    return tuple(int(item.strip()) for item in text.split(",") if item.strip())
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.command == "build-corpus":
+        manifest = build_corpus(
+            args.database,
+            args.output,
+            CorpusBuildConfig(
+                seeds=_seeds(args.seeds),
+                steps_per_seed=args.steps_per_seed,
+                max_proof_depth=args.max_proof_depth,
+                max_state_tokens=args.max_state_tokens,
+                max_action_tokens=args.max_action_tokens,
+            ),
+        )
+        print(json.dumps(manifest["counts"], ensure_ascii=False))
+        return 0
+    if args.command == "build-benchmark":
+        manifest = build_benchmarks(
+            args.database,
+            args.output,
+            BenchmarkBuildConfig(
+                seeds=_seeds(args.seeds),
+                steps_per_seed=args.steps_per_seed,
+                synthetic_per_difficulty=
+                    args.synthetic_per_difficulty,
+            ),
+        )
+        print(json.dumps(manifest["counts"], ensure_ascii=False))
+        return 0
+    if args.command == "train":
+        from .train import TrainingConfig, train_model
+
+        summary = train_model(
+            args.corpus,
+            args.output,
+            TrainingConfig(
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                learning_rate=args.learning_rate,
+                device=args.device,
+                d_model=args.d_model,
+                encoder_layers=args.layers,
+                decoder_layers=args.layers,
+            ),
+        )
+        print(json.dumps({
+            "device": summary["device"],
+            "best_validation_loss": summary["best_validation_loss"],
+            "best_checkpoint": summary["best_checkpoint"],
+        }, ensure_ascii=False))
+        return 0
+    if args.command == "evaluate":
+        from .evaluate import EvaluationConfig, evaluate_checkpoint
+
+        report = evaluate_checkpoint(
+            args.checkpoint,
+            args.corpus,
+            args.benchmark,
+            args.database,
+            args.output,
+            EvaluationConfig(
+                device=args.device,
+                easy_simulations=args.easy_sims,
+                medium_simulations=args.medium_sims,
+                hard_simulations=args.hard_sims,
+                frontier_simulations=args.frontier_sims,
+            ),
+        )
+        print(json.dumps({
+            "supervised_test": report["supervised_test"],
+            "search": [
+                {
+                    "policy": result["policy"],
+                    "certified": result["certified_total"],
+                    "total": result["total"],
+                }
+                for result in report["search"]
+            ],
+        }, ensure_ascii=False))
+        return 0
+    if args.command == "evaluate-mcts":
+        from .evaluate import (
+            MCTSEvaluationConfig,
+            evaluate_mcts_checkpoint,
+        )
+
+        report = evaluate_mcts_checkpoint(
+            args.checkpoint,
+            args.corpus,
+            args.benchmark,
+            args.database,
+            args.output,
+            MCTSEvaluationConfig(
+                device=args.device,
+                simulations=args.simulations,
+                max_search_depth=args.max_depth,
+                branching=args.branching,
+                cases_per_difficulty=args.cases_per_difficulty,
+                include_frontier=args.include_frontier,
+                origins=tuple(
+                    item.strip()
+                    for item in args.origins.split(",")
+                    if item.strip()
+                ),
+            ),
+        )
+        print(json.dumps({
+            "certified": report["certified_total"],
+            "total": report["total"],
+            "aggregate": report["aggregate"],
+            "aggregate_origin": report["aggregate_origin"],
+            "elapsed_seconds": report["elapsed_seconds"],
+        }, ensure_ascii=False))
+        return 0
+    if args.command == "reinforce":
+        from .rl import (
+            ReinforcementConfig,
+            ReplayBuffer,
+            reinforce_model,
+        )
+
+        summary = reinforce_model(
+            args.checkpoint,
+            ReplayBuffer.load(args.replay),
+            args.output,
+            ReinforcementConfig(
+                epochs=args.epochs,
+                learning_rate=args.learning_rate,
+                device=args.device,
+            ),
+        )
+        print(json.dumps(summary, ensure_ascii=False))
+        return 0
+    if args.command == "collect-replay":
+        from .rl import (
+            ReplayCollectionConfig,
+            collect_replay_from_corpus,
+        )
+
+        summary = collect_replay_from_corpus(
+            args.checkpoint,
+            args.corpus,
+            args.database,
+            args.output,
+            ReplayCollectionConfig(
+                examples=args.examples,
+                simulations=args.simulations,
+                max_depth=args.max_depth,
+                branching=args.branching,
+                device=args.device,
+            ),
+        )
+        print(json.dumps({
+            "attempted": summary["attempted"],
+            "certified": summary["certified"],
+            "replay_examples": summary["replay_examples"],
+            "device": summary["device"],
+        }, ensure_ascii=False))
+        return 0
+    if args.command == "audit-corpus":
+        from .audit import audit_corpus_actions
+
+        report = audit_corpus_actions(
+            args.database,
+            args.corpus,
+            args.output,
+        )
+        print(json.dumps({
+            "valid_actions": report["valid_actions"],
+            "invalid_actions": report["invalid_actions"],
+            "counts": report["counts"],
+        }, ensure_ascii=False))
+        return int(report["invalid_actions"] != 0)
+    if args.command == "audit-scale-corpus":
+        from .audit import audit_scale_corpus
+
+        report = audit_scale_corpus(
+            args.database,
+            args.corpus,
+            args.output,
+            sample_size=args.sample_size,
+            seed=args.seed,
+        )
+        print(json.dumps({
+            "sample_audited": report["sample_audited"],
+            "valid_actions": report["valid_actions"],
+            "invalid_actions": report["invalid_actions"],
+            "duplicate_ids_in_sample":
+                report["duplicate_ids_in_sample"],
+        }, ensure_ascii=False))
+        return int(report["invalid_actions"] != 0)
+    if args.command == "build-scale-corpus":
+        from .scale_data import ScaleCorpusConfig, build_scale_corpus
+
+        manifest = build_scale_corpus(
+            args.database,
+            args.base_corpus,
+            args.output,
+            ScaleCorpusConfig(
+                train_examples=args.train_examples,
+                validation_examples=args.validation_examples,
+                test_examples=args.test_examples,
+                shard_size=args.shard_size,
+                max_state_tokens=args.max_state_tokens,
+                max_action_tokens=args.max_action_tokens,
+                seed=args.seed,
+                workers=args.workers,
+                kernel_validation_interval=
+                    args.kernel_validation_interval,
+                max_new_records=args.max_new_records,
+            ),
+        )
+        print(json.dumps({
+            "counts": manifest["counts"],
+            "total": manifest["total"],
+            "complete": manifest["complete"],
+        }, ensure_ascii=False))
+        return 0
+    if args.command == "train-scale":
+        from .scale_train import (
+            ScaleTrainingConfig,
+            train_scale_model,
+        )
+
+        summary = train_scale_model(
+            args.corpus,
+            args.output,
+            ScaleTrainingConfig(
+                max_steps=args.max_steps,
+                micro_batch_size=args.micro_batch_size,
+                gradient_accumulation_steps=
+                    args.gradient_accumulation_steps,
+                learning_rate=args.learning_rate,
+                warmup_steps=args.warmup_steps,
+                device=args.device,
+                d_model=args.d_model,
+                nhead=args.nhead,
+                encoder_layers=args.encoder_layers,
+                decoder_layers=args.decoder_layers,
+                dim_feedforward=args.dim_feedforward,
+                initial_context_tokens=args.initial_context_tokens,
+                context_warmup_steps=args.context_warmup_steps,
+                checkpoint_every=args.checkpoint_every,
+                validation_batches=args.validation_batches,
+                require_long_context_step=
+                    not args.no_long_context_step,
+            ),
+            resume_from=args.resume,
+        )
+        print(json.dumps({
+            "device": summary["device"],
+            "parameter_count": summary["parameter_count"],
+            "completed_steps": summary["completed_steps"],
+            "peak_cuda_memory_bytes":
+                summary["peak_cuda_memory_bytes"],
+            "validation": summary["validation"],
+            "long_context_training_exercised":
+                summary["long_context_training_exercised"],
+            "final_checkpoint": summary["final_checkpoint"],
+        }, ensure_ascii=False))
+        return 0
+    if args.command == "evaluate-scale":
+        from .scale_train import evaluate_scale_checkpoint
+
+        report = evaluate_scale_checkpoint(
+            args.checkpoint,
+            args.corpus,
+            args.output,
+            split=args.split,
+            examples=args.examples,
+            device_name=args.device,
+            seed=args.seed,
+        )
+        print(json.dumps({
+            "split": report["split"],
+            "examples": report["examples"],
+            "metrics": report["metrics"],
+            "examples_per_second": report["examples_per_second"],
+            "peak_cuda_memory_bytes":
+                report["peak_cuda_memory_bytes"],
+        }, ensure_ascii=False))
+        return 0
+    if args.command == "prove":
+        import torch
+
+        from .mcts import MCTSConfig, ProofMCTS
+        from .model import ProofTransformer
+        from .search import HybridPolicy, TransformerPolicy
+
+        database = parse(args.database)
+        cases = {
+            case.case_id: case
+            for case in load_benchmarks(args.benchmark)
+        }
+        if args.case_id not in cases:
+            raise SystemExit(f"unknown benchmark case {args.case_id}")
+        target = cases[args.case_id].theorem(database)
+        tokenizer = MetamathTokenizer.load(
+            Path(args.corpus) / "tokenizer.json"
+        )
+        device = (
+            "cuda"
+            if args.device == "auto" and torch.cuda.is_available()
+            else ("cpu" if args.device == "auto" else args.device)
+        )
+        model, _ = ProofTransformer.load_checkpoint(
+            args.checkpoint,
+            map_location=device,
+        )
+        environment = BackwardEnvironment(database)
+        neural = TransformerPolicy(
+            model,
+            tokenizer,
+            environment,
+            device,
+        )
+        policy = HybridPolicy(environment, neural)
+        result = ProofMCTS(
+            environment,
+            HybridActionGenerator(environment),
+            policy,
+            MCTSConfig(simulations=args.simulations),
+        ).prove(ProofState.from_theorem(target))
+        payload = {
+            "case_id": args.case_id,
+            "solved": result.search.solved,
+            "simulations": result.search.simulations,
+            "actions": [
+                tactic.rule for tactic in result.search.actions
+            ],
+        }
+        if result.search.solved:
+            certificate = compile_certificate(
+                target,
+                result.search,
+                database,
+                name=f"mcts_{args.case_id}",
+            )
+            verify_certificate(certificate, database)
+            payload["certified"] = True
+            if args.certificate:
+                export_certificate(certificate, args.certificate)
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0
+    raise AssertionError(args.command)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

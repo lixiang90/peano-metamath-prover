@@ -1,0 +1,8 @@
+Peano Metamath Prover
+
+The bundled formal/peano.mm retains its original notice:
+Copyright (GPL) 2004 Robert Solovay.
+
+The project is distributed under the GNU General Public License version 3.
+See LICENSE. Individual source files and formal databases retain any notices
+embedded in those files.
