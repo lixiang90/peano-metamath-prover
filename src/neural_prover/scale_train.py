@@ -206,6 +206,10 @@ def _collate(records: list[dict], pad_id: int) -> dict[str, Tensor]:
             [float(record["value"]) for record in records],
             dtype=torch.float32,
         ),
+        "proof_depth": torch.tensor(
+            [int(record.get("proof_depth", 0)) for record in records],
+            dtype=torch.long,
+        ),
     }
 
 
@@ -275,6 +279,7 @@ def _evaluate(
         "exact": 0.0,
         "examples": 0.0,
     }
+    depth_totals: dict[int, dict[str, float]] = {}
     autocast_enabled = device.type == "cuda"
     with torch.inference_mode():
         for _ in range(config.validation_batches):
@@ -288,6 +293,7 @@ def _evaluate(
             action_input = batch["action_input"].to(device)
             action_target = batch["action_target"].to(device)
             value_target = batch["value_target"].to(device)
+            proof_depth = batch["proof_depth"]
             with torch.autocast(
                 device_type=device.type,
                 dtype=torch.bfloat16,
@@ -320,10 +326,59 @@ def _evaluate(
             totals["tokens"] += float(mask.sum().item())
             totals["exact"] += float(correct.all(dim=1).sum().item())
             totals["examples"] += float(len(state))
+            token_losses = F.cross_entropy(
+                logits.transpose(1, 2),
+                action_target,
+                ignore_index=tokenizer.pad_id,
+                reduction="none",
+            )
+            for row, depth_value in enumerate(proof_depth.tolist()):
+                row_mask = mask[row]
+                row_tokens = float(row_mask.sum().item())
+                bucket = depth_totals.setdefault(depth_value, {
+                    "policy_loss": 0.0,
+                    "correct": 0.0,
+                    "tokens": 0.0,
+                    "exact": 0.0,
+                    "value_error": 0.0,
+                    "examples": 0.0,
+                })
+                bucket["policy_loss"] += float(
+                    token_losses[row][row_mask].mean().item()
+                )
+                bucket["correct"] += float(
+                    ((predictions[row] == action_target[row])
+                     & row_mask).sum().item()
+                )
+                bucket["tokens"] += row_tokens
+                bucket["exact"] += float(correct[row].all().item())
+                bucket["value_error"] += (
+                    float(value[row].item())
+                    - float(value_target[row].item())
+                ) ** 2
+                bucket["examples"] += 1.0
     model.train()
     average_policy = (
         totals["policy_loss"] / max(1.0, totals["examples"])
     )
+    by_proof_depth = {
+        str(depth): {
+            "examples": int(bucket["examples"]),
+            "policy_loss": (
+                bucket["policy_loss"] / bucket["examples"]
+            ),
+            "token_accuracy": (
+                bucket["correct"] / max(1.0, bucket["tokens"])
+            ),
+            "exact_action_accuracy": (
+                bucket["exact"] / bucket["examples"]
+            ),
+            "value_mse": (
+                bucket["value_error"] / bucket["examples"]
+            ),
+        }
+        for depth, bucket in sorted(depth_totals.items())
+    }
     return {
         "loss": totals["loss"] / max(1.0, totals["examples"]),
         "policy_loss": average_policy,
@@ -333,6 +388,7 @@ def _evaluate(
         "token_accuracy": totals["correct"] / max(1.0, totals["tokens"]),
         "exact_action_accuracy":
             totals["exact"] / max(1.0, totals["examples"]),
+        "by_proof_depth": by_proof_depth,
     }
 
 
@@ -341,6 +397,42 @@ def _write_metrics(output: Path, payload: dict) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def _checkpoint_report_metadata(metadata: dict) -> dict:
+    """Return the useful, JSON-safe subset of checkpoint metadata.
+
+    Exact-resume checkpoints intentionally contain RNG tensors and the full
+    training history.  Evaluation reports should describe that checkpoint,
+    not duplicate its opaque runtime state (which is neither JSON serializable
+    nor useful to downstream metric consumers).
+    """
+
+    report = {
+        key: metadata[key]
+        for key in (
+            "parameter_count",
+            "trajectory_configuration",
+            "tokenizer",
+            "validation",
+            "latest_metrics",
+        )
+        if key in metadata
+    }
+    training_state = metadata.get("training_state")
+    if isinstance(training_state, dict):
+        report["training_state"] = {
+            key: training_state[key]
+            for key in (
+                "step",
+                "train_records_consumed",
+                "train_examples_seen",
+                "target_tokens_seen",
+                "elapsed_seconds",
+            )
+            if key in training_state
+        }
+    return report
 
 
 def train_scale_model(
@@ -803,7 +895,9 @@ def evaluate_scale_checkpoint(
             int(torch.cuda.max_memory_allocated(device))
             if device.type == "cuda" else 0
         ),
-        "checkpoint_metadata": payload.get("metadata", {}),
+        "checkpoint_metadata": _checkpoint_report_metadata(
+            payload.get("metadata", {})
+        ),
     }
     Path(destination).write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",

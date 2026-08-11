@@ -27,6 +27,13 @@ class BenchmarkBuildConfig:
     max_proof_depth: int = 7
     synthetic_per_difficulty: int = 20
     max_synthetic_nodes: int = 180
+    max_ast_depth: int = 64
+    max_hypotheses: int = 12
+    max_variables: int = 24
+    full_discharge_probability: float = 0.8
+    closed_parent_probability: float = 0.45
+    max_proof_states_per_conclusion: int = 5
+    depth_parent_bias: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +139,31 @@ def _node_count(theorem: Theorem) -> int:
 def _case_id(prefix: str, theorem: Theorem) -> str:
     key = repr(semantic_profile(theorem).full_key).encode("utf-8")
     return f"{prefix}_{hashlib.sha256(key).hexdigest()[:16]}"
+
+
+def _depth_stratified(
+    theorems: list[Theorem],
+    limit: int,
+) -> list[Theorem]:
+    """Select across reference depths, preferring deeper cases first."""
+
+    by_depth: dict[int, list[Theorem]] = {}
+    for theorem in theorems:
+        by_depth.setdefault(theorem.proof_depth, []).append(theorem)
+    for bucket in by_depth.values():
+        bucket.sort(key=lambda theorem: (_node_count(theorem), theorem.name))
+    selected: list[Theorem] = []
+    depths = sorted(by_depth, reverse=True)
+    while len(selected) < limit and depths:
+        remaining: list[int] = []
+        for depth in depths:
+            bucket = by_depth[depth]
+            if bucket and len(selected) < limit:
+                selected.append(bucket.pop(0))
+            if bucket:
+                remaining.append(depth)
+        depths = remaining
+    return selected
 
 
 def _from_theorem(
@@ -352,6 +384,16 @@ def build_benchmarks(
             GenerationConfig(
                 seed=seed,
                 max_proof_depth=cfg.max_proof_depth,
+                max_ast_depth=cfg.max_ast_depth,
+                max_hypotheses=cfg.max_hypotheses,
+                max_variables=cfg.max_variables,
+                full_discharge_probability=
+                    cfg.full_discharge_probability,
+                closed_parent_probability=
+                    cfg.closed_parent_probability,
+                max_proof_states_per_conclusion=
+                    cfg.max_proof_states_per_conclusion,
+                depth_parent_bias=cfg.depth_parent_bias,
             ),
         )
         generator.generate("random", cfg.steps_per_seed)
@@ -365,16 +407,10 @@ def build_benchmarks(
                 seen.add(profile.full_key)
                 buckets[_difficulty(theorem)].append(theorem)
     for difficulty, theorems in buckets.items():
-        theorems.sort(
-            key=lambda theorem: (
-                theorem.proof_depth,
-                _node_count(theorem),
-                theorem.name,
-            )
+        selected = _depth_stratified(
+            theorems, cfg.synthetic_per_difficulty
         )
-        for index, theorem in enumerate(
-            theorems[:cfg.synthetic_per_difficulty]
-        ):
+        for index, theorem in enumerate(selected):
             case = _from_theorem(
                 theorem,
                 f"合成 {difficulty} #{index + 1}",
@@ -407,6 +443,14 @@ def build_benchmarks(
                 case.difficulty == difficulty for case in ordered
             )
             for difficulty in ("easy", "medium", "hard", "frontier")
+        },
+        "proof_depth_histogram": {
+            str(depth): sum(
+                case.proof_depth == depth for case in ordered
+            )
+            for depth in sorted({
+                case.proof_depth for case in ordered
+            })
         },
         "cases": [case.to_record() for case in ordered],
         "interpretation": {

@@ -350,6 +350,27 @@ class TorchNeuralTests(unittest.TestCase):
                 [item["loss"] for item in resumed["history"]],
             )
 
+    def test_scale_evaluation_metadata_is_json_safe(self) -> None:
+        import torch
+
+        from neural_prover.scale_train import (
+            _checkpoint_report_metadata,
+        )
+
+        report = _checkpoint_report_metadata({
+            "parameter_count": 123,
+            "training_state": {
+                "step": 7,
+                "train_examples_seen": 28,
+                "rng_state": {"torch": torch.get_rng_state()},
+                "history": [{"loss": 1.0}],
+            },
+        })
+        json.dumps(report)
+        self.assertEqual(report["training_state"]["step"], 7)
+        self.assertNotIn("rng_state", report["training_state"])
+        self.assertNotIn("history", report["training_state"])
+
 
 if __name__ == "__main__":
     unittest.main()

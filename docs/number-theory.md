@@ -1,7 +1,7 @@
 # `peano.mm` 数论与有理估计扩展
 
-[peano-number-theory.mm](./peano-number-theory.mm) 是
-[peano.mm](./peano.mm) 的保守词汇扩展。它只增加语法和显式定义，不把费马
+[peano-number-theory.mm](../formal/peano-number-theory.mm) 是
+[peano.mm](../formal/peano.mm) 的保守词汇扩展。它只增加语法和显式定义，不把费马
 大定理、哥德巴赫猜想、素数定理或黎曼猜想直接假设为真。
 
 ## 三类声明
@@ -100,7 +100,7 @@ A^N + B^N ≠ C^N
 ## 使用
 
 ```powershell
-python -m metamath_generator peano-number-theory.mm --mode random --steps 1000
+python -m metamath_generator formal/peano-number-theory.mm --mode random --steps 1000
 ```
 
 检查扩展：
@@ -112,4 +112,3 @@ python -m unittest discover -s tests -v
 这里完成的是“可表达性和保守定义层”，不是四个著名结果的形式证明。
 `log`、`Li` 的证书关系与通常分析定义等价，仍需要在更丰富的形式化分析
 库中证明；扩展本身没有把这种外部正确性声明成新的 `|-` 公理。
-

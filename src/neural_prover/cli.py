@@ -37,6 +37,19 @@ def build_parser() -> argparse.ArgumentParser:
     corpus.add_argument("--seeds", default="7,11,19,23")
     corpus.add_argument("--steps-per-seed", type=int, default=5_000)
     corpus.add_argument("--max-proof-depth", type=int, default=7)
+    corpus.add_argument("--max-ast-depth", type=int, default=32)
+    corpus.add_argument("--max-hypotheses", type=int, default=8)
+    corpus.add_argument("--max-variables", type=int, default=16)
+    corpus.add_argument(
+        "--full-discharge-probability", type=float, default=0.72
+    )
+    corpus.add_argument(
+        "--closed-parent-probability", type=float, default=0.78
+    )
+    corpus.add_argument(
+        "--max-proof-states-per-conclusion", type=int, default=3
+    )
+    corpus.add_argument("--depth-parent-bias", type=float, default=0.0)
     corpus.add_argument("--max-state-tokens", type=int, default=256)
     corpus.add_argument("--max-action-tokens", type=int, default=192)
 
@@ -48,6 +61,17 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("output")
     benchmark.add_argument("--seeds", default="101,103,107")
     benchmark.add_argument("--steps-per-seed", type=int, default=5_000)
+    benchmark.add_argument("--max-proof-depth", type=int, default=7)
+    benchmark.add_argument("--max-ast-depth", type=int, default=64)
+    benchmark.add_argument("--max-hypotheses", type=int, default=12)
+    benchmark.add_argument("--max-variables", type=int, default=24)
+    benchmark.add_argument(
+        "--full-discharge-probability", type=float, default=0.8
+    )
+    benchmark.add_argument(
+        "--closed-parent-probability", type=float, default=0.45
+    )
+    benchmark.add_argument("--depth-parent-bias", type=float, default=0.0)
     benchmark.add_argument(
         "--synthetic-per-difficulty",
         type=int,
@@ -184,6 +208,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--kernel-validation-interval", type=int, default=1000
     )
     scale_corpus.add_argument("--max-new-records", type=int, default=0)
+    scale_corpus.add_argument(
+        "--no-depth-balancing",
+        action="store_true",
+        help="sample base templates by frequency instead of proof depth",
+    )
 
     scale_train = commands.add_parser(
         "train-scale",
@@ -254,6 +283,16 @@ def main(argv: list[str] | None = None) -> int:
                 seeds=_seeds(args.seeds),
                 steps_per_seed=args.steps_per_seed,
                 max_proof_depth=args.max_proof_depth,
+                max_ast_depth=args.max_ast_depth,
+                max_hypotheses=args.max_hypotheses,
+                max_variables=args.max_variables,
+                full_discharge_probability=
+                    args.full_discharge_probability,
+                closed_parent_probability=
+                    args.closed_parent_probability,
+                max_proof_states_per_conclusion=
+                    args.max_proof_states_per_conclusion,
+                depth_parent_bias=args.depth_parent_bias,
                 max_state_tokens=args.max_state_tokens,
                 max_action_tokens=args.max_action_tokens,
             ),
@@ -267,6 +306,15 @@ def main(argv: list[str] | None = None) -> int:
             BenchmarkBuildConfig(
                 seeds=_seeds(args.seeds),
                 steps_per_seed=args.steps_per_seed,
+                max_proof_depth=args.max_proof_depth,
+                max_ast_depth=args.max_ast_depth,
+                max_hypotheses=args.max_hypotheses,
+                max_variables=args.max_variables,
+                full_discharge_probability=
+                    args.full_discharge_probability,
+                closed_parent_probability=
+                    args.closed_parent_probability,
+                depth_parent_bias=args.depth_parent_bias,
                 synthetic_per_difficulty=
                     args.synthetic_per_difficulty,
             ),
@@ -454,12 +502,17 @@ def main(argv: list[str] | None = None) -> int:
                 kernel_validation_interval=
                     args.kernel_validation_interval,
                 max_new_records=args.max_new_records,
+                depth_balanced=not args.no_depth_balancing,
             ),
         )
         print(json.dumps({
             "counts": manifest["counts"],
             "total": manifest["total"],
             "complete": manifest["complete"],
+            "maximum_proof_depth":
+                manifest.get("maximum_proof_depth", 0),
+            "proof_depth_histogram":
+                manifest.get("proof_depth_histogram", {}),
         }, ensure_ascii=False))
         return 0
     if args.command == "train-scale":

@@ -112,6 +112,8 @@ def audit_scale_corpus(
     maximum_action = 0
     global_index = 0
     audited_by_split: dict[str, int] = {}
+    audited_by_depth: dict[str, int] = {}
+    valid_by_depth: dict[str, int] = {}
     for split in ("train", "validation", "test"):
         split_audited = 0
         for record in iter_scale_records(corpus, split):
@@ -119,6 +121,10 @@ def audit_scale_corpus(
                 audited += 1
                 split_audited += 1
                 record_id = str(record["id"])
+                proof_depth = str(int(record.get("proof_depth", 0)))
+                audited_by_depth[proof_depth] = (
+                    audited_by_depth.get(proof_depth, 0) + 1
+                )
                 if record_id in seen_ids:
                     duplicates += 1
                 seen_ids.add(record_id)
@@ -145,6 +151,9 @@ def audit_scale_corpus(
                         tactic,
                     )
                     valid += 1
+                    valid_by_depth[proof_depth] = (
+                        valid_by_depth.get(proof_depth, 0) + 1
+                    )
                 except Exception as exc:
                     failures.append({
                         "split": split,
@@ -162,6 +171,12 @@ def audit_scale_corpus(
         "sample_requested": sample_size,
         "sample_audited": audited,
         "sample_by_split": audited_by_split,
+        "sample_by_proof_depth": dict(sorted(
+            audited_by_depth.items(), key=lambda item: int(item[0])
+        )),
+        "valid_by_proof_depth": dict(sorted(
+            valid_by_depth.items(), key=lambda item: int(item[0])
+        )),
         "valid_actions": valid,
         "invalid_actions": len(failures),
         "duplicate_ids_in_sample": duplicates,

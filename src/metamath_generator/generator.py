@@ -33,6 +33,9 @@ class GenerationConfig(_EngineConfig):
     default_rule_weight: float = 1.0
     max_forward_candidates_per_premise: int = 30
     max_proof_states_per_conclusion: int = 3
+    # Zero preserves the quality-first sampler. Positive values increasingly
+    # reuse deeper certified parents, enabling explicit depth-scaling runs.
+    depth_parent_bias: float = 0.0
 
 
 @dataclass(slots=True)
@@ -273,7 +276,14 @@ class TheoremGenerator(_CompositionEngine):
         quality_bonus = max(0.5, (assessment.score / 12.0) if assessment else 1.0)
         usage_key = theorem_id if theorem_id is not None else -1
         reuse_penalty = math.sqrt(1.0 + self._candidate_use[usage_key])
-        return (closed_bonus + quality_bonus) / reuse_penalty
+        depth_bonus = (1.0 + theorem.proof_depth) ** (
+            self.config.depth_parent_bias
+        )
+        return (
+            (closed_bonus + quality_bonus)
+            * depth_bonus
+            / reuse_penalty
+        )
 
     def _choose_candidate(self, premise: Node) -> Theorem | None:
         candidates = self._active_candidates(premise)

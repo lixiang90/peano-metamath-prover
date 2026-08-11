@@ -170,6 +170,7 @@ def _run_policy(
             "title": case.title,
             "origin": case.origin,
             "difficulty": case.difficulty,
+            "reference_proof_depth": case.proof_depth,
             "expected_status": case.expected_status,
             "solved": bool(result and result.solved),
             "certified": certified,
@@ -364,6 +365,7 @@ def evaluate_mcts_checkpoint(
             "case_id": case.case_id,
             "origin": case.origin,
             "difficulty": case.difficulty,
+            "reference_proof_depth": case.proof_depth,
             "certified": certified,
             "simulations": (
                 result.search.simulations if result else 0
@@ -397,6 +399,24 @@ def evaluate_mcts_checkpoint(
                 record["certified"] for record in subset
             ),
         }
+    aggregate_depth = {}
+    for depth in sorted({
+        record["reference_proof_depth"] for record in records
+    }):
+        subset = [
+            record for record in records
+            if record["reference_proof_depth"] == depth
+        ]
+        aggregate_depth[str(depth)] = {
+            "cases": len(subset),
+            "certified": sum(
+                record["certified"] for record in subset
+            ),
+            "certified_rate": (
+                sum(record["certified"] for record in subset)
+                / len(subset)
+            ),
+        }
     report = {
         "format": "peano-hybrid-mcts-evaluation-v1",
         "checkpoint": str(Path(checkpoint).resolve()),
@@ -405,6 +425,7 @@ def evaluate_mcts_checkpoint(
         "configuration": asdict(cfg),
         "aggregate": aggregate,
         "aggregate_origin": aggregate_origin,
+        "aggregate_reference_proof_depth": aggregate_depth,
         "certified_total": sum(
             record["certified"] for record in records
         ),

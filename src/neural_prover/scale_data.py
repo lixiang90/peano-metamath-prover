@@ -41,6 +41,7 @@ class ScaleCorpusConfig:
     workers: int = 8
     kernel_validation_interval: int = 1000
     max_new_records: int = 0
+    depth_balanced: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,13 @@ class _Template:
     example: ProverExample
     theorem: Theorem
     tactic: Tactic
+
+
+@dataclass(frozen=True, slots=True)
+class _TemplatePool:
+    all_templates: tuple[_Template, ...]
+    by_depth: dict[int, tuple[_Template, ...]]
+    depths: tuple[int, ...]
 
 
 def _term(rng: random.Random, budget: int) -> Node:
@@ -233,7 +241,7 @@ def _templates(
     tokenizer: MetamathTokenizer,
     database,
     environment: BackwardEnvironment,
-) -> list[_Template]:
+) -> _TemplatePool:
     result: list[_Template] = []
     for example in load_examples(split_path):
         theorem = tokenizer.theorem_from_state_tokens(
@@ -257,7 +265,19 @@ def _templates(
             result.append(_Template(example, theorem, tactic))
     if not result:
         raise ValueError(f"no augmentable templates in {split_path}")
-    return result
+    by_depth: dict[int, list[_Template]] = {}
+    for template in result:
+        by_depth.setdefault(
+            template.example.proof_depth, []
+        ).append(template)
+    return _TemplatePool(
+        tuple(result),
+        {
+            depth: tuple(templates)
+            for depth, templates in by_depth.items()
+        },
+        tuple(sorted(by_depth)),
+    )
 
 
 def _seed_for(
@@ -282,7 +302,7 @@ def _length_bucket(length: int) -> str:
 def _one_record(
     split: str,
     index: int,
-    templates: list[_Template],
+    templates: _TemplatePool,
     tokenizer: MetamathTokenizer,
     environment: BackwardEnvironment,
     config: ScaleCorpusConfig,
@@ -291,7 +311,14 @@ def _one_record(
         rng = random.Random(
             _seed_for(config.seed, split, index, attempt)
         )
-        template = templates[rng.randrange(len(templates))]
+        if config.depth_balanced:
+            depth = templates.depths[rng.randrange(len(templates.depths))]
+            depth_templates = templates.by_depth[depth]
+            template = depth_templates[rng.randrange(len(depth_templates))]
+        else:
+            template = templates.all_templates[
+                rng.randrange(len(templates.all_templates))
+            ]
         substitution = _instantiation(template.theorem, rng)
         theorem = _instantiate_theorem(
             template.theorem,
@@ -334,6 +361,7 @@ def _one_record(
             "value": template.example.value_target,
             "difficulty": template.example.difficulty,
             "base": template.example.example_id,
+            "proof_depth": template.example.proof_depth,
         }
     raise RuntimeError(
         f"could not generate a valid {split} record at index {index}"
@@ -423,7 +451,7 @@ def build_scale_corpus(
             return manifest
     else:
         manifest = {
-            "format": "peano-scale-corpus-v2",
+            "format": "peano-scale-corpus-v3",
             "database": str(Path(database_path).resolve()),
             "base_corpus": str(
                 Path(base_corpus_directory).resolve()
@@ -436,6 +464,9 @@ def build_scale_corpus(
             },
             "shards": {split: [] for split in targets},
             "length_histogram": {},
+            "proof_depth_histogram": {
+                split: {} for split in targets
+            },
             "complete": False,
             "leakage_control": (
                 "each split is augmented only from templates already "
@@ -449,6 +480,10 @@ def build_scale_corpus(
             split: int(manifest["counts"][split])
             for split in targets
         },
+    )
+    manifest.setdefault(
+        "proof_depth_histogram",
+        {split: {} for split in targets},
     )
 
     base = Path(base_corpus_directory)
@@ -516,6 +551,7 @@ def build_scale_corpus(
                 part = len(manifest["shards"][split])
                 path = directory / f"part-{part:05d}.jsonl.gz"
                 histogram: dict[str, int] = {}
+                depth_histogram: dict[str, int] = {}
                 accepted = 0
                 with gzip.open(
                     path,
@@ -576,6 +612,12 @@ def build_scale_corpus(
                             histogram[bucket] = (
                                 histogram.get(bucket, 0) + 1
                             )
+                            proof_depth = str(
+                                int(record.get("proof_depth", 0))
+                            )
+                            depth_histogram[proof_depth] = (
+                                depth_histogram.get(proof_depth, 0) + 1
+                            )
                             stream.write(
                                 json.dumps(
                                     record,
@@ -592,12 +634,19 @@ def build_scale_corpus(
                     "path": str(path.relative_to(output)),
                     "records": count,
                     "bytes": path.stat().st_size,
+                    "proof_depth_histogram": dict(sorted(
+                        depth_histogram.items(),
+                        key=lambda item: int(item[0]),
+                    )),
                 })
                 for bucket, value in histogram.items():
                     manifest["length_histogram"][bucket] = (
                         manifest["length_histogram"].get(bucket, 0)
                         + value
                     )
+                split_depths = manifest["proof_depth_histogram"][split]
+                for depth, value in depth_histogram.items():
+                    split_depths[depth] = split_depths.get(depth, 0) + value
                 remaining_this_call -= count
                 _write_manifest(output, manifest)
     finally:
@@ -608,6 +657,15 @@ def build_scale_corpus(
     manifest["complete"] = all(
         manifest["counts"][split] == target
         for split, target in targets.items()
+    )
+    manifest["maximum_proof_depth"] = max(
+        (
+            int(depth)
+            for histogram in manifest["proof_depth_histogram"].values()
+            for depth, count in histogram.items()
+            if count > 0
+        ),
+        default=0,
     )
     _write_manifest(output, manifest)
     return manifest

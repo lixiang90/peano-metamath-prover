@@ -25,6 +25,13 @@ class CorpusBuildConfig:
     seeds: tuple[int, ...] = (7, 11, 19, 23)
     steps_per_seed: int = 5_000
     max_proof_depth: int = 7
+    max_ast_depth: int = 32
+    max_hypotheses: int = 8
+    max_variables: int = 16
+    full_discharge_probability: float = 0.72
+    closed_parent_probability: float = 0.78
+    max_proof_states_per_conclusion: int = 3
+    depth_parent_bias: float = 0.0
     validation_fraction: float = 0.1
     test_fraction: float = 0.1
     include_inference_rules: bool = True
@@ -273,16 +280,42 @@ def build_corpus(
             GenerationConfig(
                 seed=seed,
                 max_proof_depth=cfg.max_proof_depth,
+                max_ast_depth=cfg.max_ast_depth,
+                max_hypotheses=cfg.max_hypotheses,
+                max_variables=cfg.max_variables,
+                full_discharge_probability=
+                    cfg.full_discharge_probability,
+                closed_parent_probability=
+                    cfg.closed_parent_probability,
+                max_proof_states_per_conclusion=
+                    cfg.max_proof_states_per_conclusion,
+                depth_parent_bias=cfg.depth_parent_bias,
             ),
         )
         generator.generate("random", cfg.steps_per_seed)
         summary = generator.summary()
+        generated = [
+            theorem
+            for theorem in generator.store.generated()
+            if theorem.proof is not None
+        ]
+        depth_histogram: dict[str, int] = {}
+        for theorem in generated:
+            depth = str(theorem.proof_depth)
+            depth_histogram[depth] = depth_histogram.get(depth, 0) + 1
         run_summaries.append({
             "seed": seed,
             "stored": summary.stored,
             "active": summary.active,
             "categories": summary.categories,
             "rejected": summary.rejected,
+            "maximum_proof_depth": max(
+                (theorem.proof_depth for theorem in generated),
+                default=0,
+            ),
+            "proof_depth_histogram": dict(sorted(
+                depth_histogram.items(), key=lambda item: int(item[0])
+            )),
         })
         for example in _examples_from_generator(
             generator,
@@ -307,6 +340,7 @@ def build_corpus(
     tokenizer_path = output / "tokenizer.json"
     tokenizer.save(tokenizer_path)
     counts: dict[str, int] = {}
+    split_depth_histograms: dict[str, dict[str, int]] = {}
     for split in ("train", "validation", "test"):
         examples = sorted(
             (
@@ -320,9 +354,16 @@ def build_corpus(
             ),
         )
         counts[split] = _write_jsonl(output / f"{split}.jsonl", examples)
+        depth_histogram: dict[str, int] = {}
+        for example in examples:
+            depth = str(example.proof_depth)
+            depth_histogram[depth] = depth_histogram.get(depth, 0) + 1
+        split_depth_histograms[split] = dict(sorted(
+            depth_histogram.items(), key=lambda item: int(item[0])
+        ))
 
     manifest = {
-        "format": "peano-neural-corpus-v1",
+        "format": "peano-neural-corpus-v2",
         "database": str(Path(database_path).resolve()),
         "configuration": {
             **asdict(cfg),
@@ -331,6 +372,14 @@ def build_corpus(
         "vocabulary_size": len(tokenizer),
         "counts": counts,
         "total": sum(counts.values()),
+        "proof_depth_histogram": split_depth_histograms,
+        "maximum_proof_depth": max(
+            (
+                example.proof_depth
+                for example in best.values()
+            ),
+            default=0,
+        ),
         "runs": run_summaries,
         "leakage_control": (
             "split is assigned by SHA-256 of the alpha-normalized conclusion; "
