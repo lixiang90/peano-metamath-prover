@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -14,10 +14,14 @@ from metamath_generator.model import Database, Hypothesis, Node, Theorem
 from metamath_generator.parser import MetamathParser, ParseError, parse
 from metamath_generator.quality import semantic_profile
 
+from .data import load_examples
+from .tokenizer import MetamathTokenizer
+
 BenchmarkDifficulty = Literal["easy", "medium", "hard", "frontier"]
 BenchmarkOrigin = Literal[
     "synthetic", "foundational", "curated", "famous"
 ]
+BenchmarkScoreGroup = Literal["research", "sanity", "frontier"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +38,8 @@ class BenchmarkBuildConfig:
     closed_parent_probability: float = 0.45
     max_proof_states_per_conclusion: int = 5
     depth_parent_bias: float = 0.0
+    training_corpora: tuple[str, ...] = ()
+    reference_output: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +56,10 @@ class BenchmarkCase:
     reference_rule: str | None = None
     proof_depth: int = 0
     node_count: int = 0
+    score_group: BenchmarkScoreGroup = "research"
+    research_eligible: bool = True
+    excluded_labels: tuple[str, ...] = ()
+    leakage_reason: str | None = None
 
     def theorem(self, database: Database) -> Theorem:
         parser = MetamathParser()
@@ -82,12 +92,15 @@ class BenchmarkCase:
             kind="benchmark",
         )
 
-    def to_record(self) -> dict:
+    def to_record(self, *, include_reference: bool = False) -> dict:
         payload = asdict(self)
+        if not include_reference:
+            payload.pop("reference_rule", None)
         for key in (
             "hypotheses",
             "d_constraints",
             "variable_types",
+            "excluded_labels",
         ):
             payload[key] = [list(item) if isinstance(item, tuple) else item
                             for item in payload[key]]
@@ -98,6 +111,11 @@ class BenchmarkCase:
         record = dict(payload)
         record.setdefault("proof_depth", 0)
         record.setdefault("node_count", 0)
+        record.setdefault("score_group", "research")
+        record.setdefault("research_eligible", True)
+        record.setdefault("excluded_labels", ())
+        record.setdefault("leakage_reason", None)
+        record.setdefault("reference_rule", None)
         record["hypotheses"] = tuple(record["hypotheses"])
         record["d_constraints"] = tuple(
             tuple(pair) for pair in record["d_constraints"]
@@ -105,7 +123,91 @@ class BenchmarkCase:
         record["variable_types"] = tuple(
             tuple(pair) for pair in record["variable_types"]
         )
+        record["excluded_labels"] = tuple(record["excluded_labels"])
         return cls(**record)
+
+
+@dataclass(slots=True)
+class _LeakageIndex:
+    full_keys: set[tuple]
+    conclusion_keys: set[tuple]
+    examples: int = 0
+    sources: tuple[str, ...] = ()
+
+
+def _corpus_directories(paths: tuple[str, ...]) -> list[Path]:
+    result: list[Path] = []
+    seen: set[Path] = set()
+    pending = [Path(item).resolve() for item in paths]
+    while pending:
+        path = pending.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        manifest_path = path / "manifest.json"
+        if manifest_path.is_file():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            base = manifest.get("base_corpus")
+            if base:
+                pending.append(Path(base).resolve())
+            if (path / "train.jsonl").is_file():
+                result.append(path)
+        elif path.is_file() and path.name == "train.jsonl":
+            result.append(path.parent)
+        else:
+            raise ValueError(f"unsupported training corpus path: {path}")
+    return result
+
+
+def _training_leakage_index(
+    paths: tuple[str, ...],
+    database,
+) -> _LeakageIndex:
+    index = _LeakageIndex(set(), set(), sources=tuple(paths))
+    for directory in _corpus_directories(paths):
+        tokenizer = MetamathTokenizer.load(directory / "tokenizer.json")
+        for example in load_examples(directory / "train.jsonl"):
+            theorem = tokenizer.theorem_from_state_tokens(
+                example.state_tokens,
+                database,
+                name=f"leakage_{example.example_id}",
+            )
+            profile = semantic_profile(theorem)
+            index.full_keys.add(profile.full_key)
+            index.conclusion_keys.add(profile.conclusion_key)
+            index.examples += 1
+    return index
+
+
+def _equivalent_source_labels(theorem: Theorem, database) -> tuple[str, ...]:
+    target = semantic_profile(theorem).conclusion_key
+    return tuple(sorted(
+        label
+        for label, assertion in database.logical_assertions.items()
+        if semantic_profile(assertion).conclusion_key == target
+    ))
+
+
+def _apply_leakage_policy(
+    case: BenchmarkCase,
+    theorem: Theorem,
+    leakage: _LeakageIndex,
+    database,
+) -> BenchmarkCase:
+    profile = semantic_profile(theorem)
+    reason = None
+    if profile.full_key in leakage.full_keys:
+        reason = "exact normalized theorem occurs in training"
+    elif profile.conclusion_key in leakage.conclusion_keys:
+        reason = "alpha-normalized conclusion occurs in training"
+    return replace(
+        case,
+        excluded_labels=_equivalent_source_labels(theorem, database),
+        research_eligible=(
+            case.score_group == "research" and reason is None
+        ),
+        leakage_reason=reason,
+    )
 
 
 def _difficulty(theorem: Theorem) -> BenchmarkDifficulty:
@@ -172,6 +274,8 @@ def _from_theorem(
     origin: BenchmarkOrigin,
     difficulty: BenchmarkDifficulty,
     expected_status: str,
+    *,
+    score_group: BenchmarkScoreGroup = "research",
 ) -> BenchmarkCase:
     return BenchmarkCase(
         case_id=_case_id(origin, theorem),
@@ -191,6 +295,8 @@ def _from_theorem(
         ),
         proof_depth=theorem.proof_depth,
         node_count=_node_count(theorem),
+        score_group=score_group,
+        research_eligible=score_group == "research",
     )
 
 
@@ -306,6 +412,7 @@ def _curated_case(
         "curated",
         difficulty,
         "known theorem; derivable from the base axioms",
+        score_group="research",
     )
 
 
@@ -332,6 +439,7 @@ def _famous_case(
         "famous",
         "frontier",
         status,
+        score_group="frontier",
     )
 
 
@@ -342,6 +450,7 @@ def build_benchmarks(
 ) -> dict:
     cfg = config or BenchmarkBuildConfig()
     database = parse(database_path)
+    leakage = _training_leakage_index(cfg.training_corpora, database)
     cases: dict[str, BenchmarkCase] = {}
 
     for label, (title, difficulty) in FOUNDATIONAL.items():
@@ -352,7 +461,9 @@ def build_benchmarks(
             "foundational",
             difficulty,  # type: ignore[arg-type]
             "source sanity check",
+            score_group="sanity",
         )
+        case = replace(case, research_eligible=False)
         cases[case.case_id] = case
 
     for (
@@ -369,6 +480,9 @@ def build_benchmarks(
             expression,
             variable_types,
             database,
+        )
+        case = _apply_leakage_policy(
+            case, case.theorem(database), leakage, database
         )
         cases[case.case_id] = case
 
@@ -418,6 +532,11 @@ def build_benchmarks(
                 difficulty,  # type: ignore[arg-type]
                 "verified synthetic theorem",
             )
+            case = _apply_leakage_policy(
+                case, theorem, leakage, database
+            )
+            if not case.research_eligible:
+                continue
             cases[case.case_id] = case
 
     for label, (title, status) in FAMOUS.items():
@@ -444,6 +563,13 @@ def build_benchmarks(
             )
             for difficulty in ("easy", "medium", "hard", "frontier")
         },
+        "score_group_counts": {
+            group: sum(case.score_group == group for case in ordered)
+            for group in ("research", "sanity", "frontier")
+        },
+        "research_eligible": sum(
+            case.research_eligible for case in ordered
+        ),
         "proof_depth_histogram": {
             str(depth): sum(
                 case.proof_depth == depth for case in ordered
@@ -453,6 +579,21 @@ def build_benchmarks(
             })
         },
         "cases": [case.to_record() for case in ordered],
+        "leakage_audit": {
+            "training_corpora": list(cfg.training_corpora),
+            "training_examples_indexed": leakage.examples,
+            "policy": (
+                "research cases exclude exact normalized theorem and "
+                "alpha-normalized conclusion collisions"
+            ),
+        },
+        "allowed_assertions": {
+            "labels": sorted(database.logical_assertions),
+            "sha256": hashlib.sha256("\n".join(
+                sorted(database.logical_assertions)
+            ).encode("utf-8")).hexdigest(),
+            "per_case_exclusions": True,
+        },
         "interpretation": {
             "synthetic": "held-out verified proof objects",
             "foundational": "kernel and search sanity checks",
@@ -471,6 +612,21 @@ def build_benchmarks(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    if cfg.reference_output:
+        Path(cfg.reference_output).write_text(
+            json.dumps({
+                "format": "peano-proof-benchmark-reference-v1",
+                "benchmark": str(Path(destination).resolve()),
+                "references": {
+                    case.case_id: {
+                        "reference_rule": case.reference_rule,
+                        "reference_proof_depth": case.proof_depth,
+                    }
+                    for case in ordered
+                },
+            }, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     return manifest
 
 

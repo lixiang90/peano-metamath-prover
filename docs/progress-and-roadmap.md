@@ -1,7 +1,38 @@
 # 当前进展与研究路线
 
-本文记录 2026-08-11 时项目已经实际完成的能力、尚未证明的能力，以及下一阶段
+本文记录截至 2026-08-24 项目已经实际完成的能力、尚未证明的能力，以及下一阶段
 闭环解题、强化学习和连续潜在思维的实现顺序。规划中的功能不会描述成现有能力。
+
+## 0. P0–P3 实施状态
+
+这里把“工程实现”和“研究验收”分开。代码能运行不等于实验假设已经成立。
+
+| 阶段 | 工程状态 | 研究验收状态 |
+| --- | --- | --- |
+| P0 可信闭环 | 已实现 benchmark 泄漏审计、逐题规则排除、四策略同预算 MCTS、项目内/外部双验证、Wilson 95% 区间、计算计数和逐 attempt 进度日志 | 已完成 9 题单 seed 首轮；7/7 成功证书通过官方 Metamath；仍待 37 题三种子全量报告 |
+| P1 结构化策略 | 已实现对符号内核枚举的有限候选集合进行候选索引打分；替换仍由合一器求解；旧检查点保留自回归冷启动兼容路径 | 首轮使纯神经搜索加速 2.32 倍，但 solve rate 未提升，研究验收未通过 |
+| P2 可验证 RL | 已实现 AlphaZero 式 MCTS 访问分布/价值回放、失败死端价值样本、预算耗尽删失和候选策略头更新 | 50 条 replay 首轮 solve rate 不变，研究验收未通过；GRPO/PPO 对照尚未实现 |
+| P3 分解与潜在思维 | 已实现受内核约束的中间引理 cut 动作、词表兼容升级、连续向量递归、停止头、MCTS/replay 接线与证书内联 | 仅完成本地工程原型与回归测试；尚未规模训练或证明 solve rate 增益 |
+
+P3 已按新需求提前实现为隔离的可选原型，旧模型文件与检查点不变。它不会绕过
+P0–P2 的研究门槛：新增权重训练和规模对照实验应在现有可信闭环上进行。
+
+### 2026-08-24 RTX 5090 首轮正式规模结果
+
+- 生成 1,100,000 条动作记录，10,000 条确定性抽样全部通过内核回放；
+- 在 RTX 5090 上将 105,312,496 参数模型训练至 10,000 步，消费 80,000 个
+  样本和 73,038,051 个目标 token；
+- 5,000 条测试的 token accuracy 为 92.26%，完整参考动作准确率仍为 0；
+- 从 37 个泄漏合格 research 目标中固定抽 easy/medium/hard 各三题，seed=17、
+  40 simulations，四策略共 36 attempts；
+- SFT 与候选头更新后均为 uniform 0/9、heuristic 4/9、neural 0/9、hybrid 3/9；
+- 12 个训练目标收集到 50 条 replay；候选头更新使 neural 总时延
+  147.38→63.62 秒，但没有提高 solve rate；
+- 最终 7 个成功 attempt 全部通过项目内核和官方 Metamath 双验证。
+
+完整配置、哈希、逐策略耗时和限制见
+[首次 RTX 5090 规模训练与闭环实验](first-rtx5090-closed-loop-run.md)。该结果是
+首轮受控实验，不替代 37 题、seeds 17/19/23 的 P0 正式验收。
 
 ## 1. 已完成的基础
 
@@ -189,6 +220,13 @@ Coconut 论文：<https://arxiv.org/abs/2412.06769>。
 验收：报告能回答“在相同预算下，每种策略实际证明了多少目标”，而不是只报告
 动作 token accuracy。
 
+当前实现说明：公开 benchmark 不再携带 `reference_rule`；需要参考深度/规则时写入
+私有 sidecar。构建器会索引训练语料中的规范化证明状态，剔除精确或
+alpha-规范化结论碰撞，并为每题排除源库中同结论标签。评估默认只统计
+`research` 组；`foundational` 只用于 sanity，著名定理与开放猜想属于 frontier。
+每个策略、题目和 seed 都使用全新的环境实例，避免候选缓存给后运行策略带来优势。
+成功证书可以要求外部 Metamath 验证器通过，否则按 fail-closed 处理。
+
 ### P1：结构化策略与高效搜索
 
 - 网络排序符号合法候选；
@@ -197,6 +235,12 @@ Coconut 论文：<https://arxiv.org/abs/2412.06769>。
 - 报告节点吞吐、GPU 利用率与 solve-rate/compute 曲线。
 
 验收：神经策略在至少一个非平凡深度桶中显著优于纯符号基线。
+
+当前实现说明：策略头接收一个状态和内核已经枚举、类型检查过的有限动作集合，
+输出候选索引 logits；不生成 substitution 文本。MCTS replay 第一次提供有效访问
+分布后，检查点会标记 `candidate_policy.trained=true`，推理随即切换到候选索引头。
+旧监督检查点没有这些权重时仍可加载，并以原自回归动作似然作为 bootstrap 排序。
+环境和策略报告枚举次数、缓存命中、状态转移次数、候选数和评分 token 数。
 
 ### P2：可验证强化学习
 
@@ -207,10 +251,61 @@ Coconut 论文：<https://arxiv.org/abs/2412.06769>。
 
 验收：固定搜索预算下 certified solve rate 提升，并保持证书 100% 内核通过。
 
+当前实现说明：成功路径同时提供策略和价值监督；已证明无动作的死端只提供负价值
+监督；搜索预算耗尽既不是失败证明，也不产生伪负价值，按删失样本记账。策略损失
+是同一状态有限合法候选上的交叉熵，目标为 MCTS 访问分布。该实现是 P2 的
+AlphaZero 路线；GRPO/PPO 只有在形成稳定的同预算基线后才进入对照实验。
+
+### P0–P2 最小复现实验
+
+```bash
+python -m neural_prover build-benchmark \
+  formal/peano-number-theory.mm outputs/benchmark-v2.json \
+  --training-corpus outputs/corpus \
+  --reference-output outputs/benchmark-reference.private.json
+
+python -m neural_prover evaluate-mcts \
+  outputs/model/final.pt outputs/corpus outputs/benchmark-v2.json \
+  formal/peano-number-theory.mm outputs/baselines.json \
+  --policies uniform,heuristic,neural,hybrid --seeds 17,19,23 \
+  --external-verifier /path/to/metamath \
+  --require-external-verification
+
+python -m neural_prover collect-replay \
+  outputs/model/final.pt outputs/corpus formal/peano-number-theory.mm \
+  outputs/replay.jsonl
+
+python -m neural_prover reinforce \
+  outputs/model/final.pt outputs/replay.jsonl outputs/model/rl-1.pt
+```
+
+正式结论必须比较 RL 前后完全相同的题目选择、seed、simulation、branching、
+最大深度和外部验证要求。报告中的 attempt 是“题目 × seed”，不能把同一道题的
+多个 seed 当作互相独立的新定理。
+
+### 2026-08-22 端到端 smoke 结果
+
+本轮用小模型和很小预算验证 P0–P2 的接线，而不是做研究验收：
+
+- 生成 71/1/4 条 train/validation/test 样本，benchmark 索引了全部 71 个训练状态；
+- 公开 benchmark 有 9 个 research-eligible 目标，且不含 `reference_rule`；
+- 从每个 easy/medium/hard 桶固定抽 1 题、seed=17、20 simulations，四策略共
+  12 次 attempt，5 次通过项目内核和官方 Metamath 双验证；
+- 冷启动分组为 uniform 0/3、heuristic 2/3、neural 1/3、hybrid 2/3；
+- 6 个训练目标全部产生可认证证明，形成 13 个策略/价值均已知的去重 replay 状态；
+- 一轮 AlphaZero 更新后，检查点推理报告 `scoring_mode=candidate_index`；
+- 同题同预算复跑 neural/hybrid 得到 0/3 和 2/3，合计从更新前 3/6 变为 2/6。
+
+最后一项明确说明这个 smoke **没有**证明 RL 改善，反而在极小样本上退化。它只
+证明候选头训练、检查点切换、闭环搜索和双验证可以贯通。P1/P2 的研究验收必须
+扩大 replay、加入保留评估集和三种子置信区间；P3 原型在此之前不应被描述为能力
+提升，也不应成为扩大模型的依据。
+
 ### P3：连续潜在思维
 
-- 固定思考步数消融；
-- 可学习停止头和最大思考预算；
+- 工程原型已完成：中间引理动作、固定预算连续递归、可学习停止头和最大思考预算；
+- 用认证 replay 训练新增词表行、潜在递归层、停止头和引理门控头；
+- 固定 0/2/4/8 思考步数消融；
 - 比较无思维、离散辅助线提议和连续思维；
 - 报告性能、额外计算量和按深度收益。
 

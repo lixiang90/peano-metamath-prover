@@ -126,6 +126,11 @@ class Database:
     statements: dict[str, Theorem] = field(default_factory=dict)
     floating_hypotheses: dict[str, Hypothesis] = field(default_factory=dict)
     essential_hypotheses: dict[str, Hypothesis] = field(default_factory=dict)
+    # Hypotheses still active at end-of-file.  External certificates appended
+    # to a database must reuse these instead of redeclaring the same $v/$f.
+    active_floating_hypotheses: dict[str, Hypothesis] = field(
+        default_factory=dict
+    )
     # Global lookup remains useful for diagnostics, but verification must
     # additionally consult source order and the theorem-local active scope.
     label_order: dict[str, int] = field(default_factory=dict)

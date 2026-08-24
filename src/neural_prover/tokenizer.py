@@ -41,6 +41,9 @@ INSTRUCTION_TOKENS = (
     "<END_ACTION>",
     "<VALUE>",
     "<SEP>",
+    "<PROPOSE_LEMMA>",
+    "<LEMMA>",
+    "<END_LEMMA>",
 )
 VARIABLE_TOKEN_PATTERN = re.compile(r"^<V:(.+):(\d+)>$")
 
@@ -128,13 +131,24 @@ class MetamathTokenizer:
         self,
         tokens: Iterable[str],
         config: TokenizerConfig | None = None,
+        *,
+        preserve_token_order: bool = False,
     ) -> None:
         self.config = config or TokenizerConfig()
         supplied = list(dict.fromkeys(tokens))
-        ordered = [
-            *INSTRUCTION_TOKENS,
-            *(token for token in supplied if token not in INSTRUCTION_TOKENS),
-        ]
+        if preserve_token_order:
+            # Serialized vocabularies define checkpoint-facing token IDs.
+            # Never insert newly introduced control tokens into an old file:
+            # an explicit upgrade appends them without shifting existing IDs.
+            ordered = supplied
+        else:
+            ordered = [
+                *INSTRUCTION_TOKENS,
+                *(
+                    token for token in supplied
+                    if token not in INSTRUCTION_TOKENS
+                ),
+            ]
         self.tokens = tuple(ordered)
         self.token_to_id = {
             token: index for index, token in enumerate(self.tokens)
@@ -299,6 +313,51 @@ class MetamathTokenizer:
         self.encode(tokens)
         return tokens
 
+    def lemma_tactic_tokens(
+        self,
+        lemma: Node,
+        variables: CanonicalVariables,
+    ) -> list[str]:
+        """Encode a kernel-checked intermediate-lemma proposal."""
+
+        if lemma.op != "|-" or len(lemma.args) != 1:
+            raise ValueError("an intermediate lemma must be a |- assertion")
+        tokens = [
+            "<BOS>",
+            "<ACTION>",
+            "<PROPOSE_LEMMA>",
+            "<LEMMA>",
+        ]
+        tokens.extend(self._node_tokens(lemma, variables))
+        tokens.extend(["<END_LEMMA>", "<END_ACTION>", "<EOS>"])
+        self.encode(tokens)
+        return tokens
+
+    @property
+    def supports_lemma_actions(self) -> bool:
+        return all(
+            token in self.token_to_id
+            for token in (
+                "<PROPOSE_LEMMA>", "<LEMMA>", "<END_LEMMA>"
+            )
+        )
+
+    def upgraded_for_lemma_actions(self) -> "MetamathTokenizer":
+        """Append lemma controls while preserving every existing token ID."""
+
+        tokens = [*self.tokens]
+        tokens.extend(
+            token for token in (
+                "<PROPOSE_LEMMA>", "<LEMMA>", "<END_LEMMA>"
+            )
+            if token not in self.token_to_id
+        )
+        return MetamathTokenizer(
+            tokens,
+            self.config,
+            preserve_token_order=True,
+        )
+
     def theorem_from_state_tokens(
         self,
         tokens: Iterable[str],
@@ -396,4 +455,5 @@ class MetamathTokenizer:
         return cls(
             payload["tokens"],
             TokenizerConfig(**payload["config"]),
+            preserve_token_order=True,
         )

@@ -5,6 +5,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from metamath_generator.model import Hypothesis, Node, Theorem
@@ -23,6 +24,12 @@ from neural_prover.environment import (
     InvalidTactic,
     ProofState,
     Tactic,
+    parse_tactic_tokens,
+)
+from neural_prover.lemma import (
+    LemmaBackwardEnvironment,
+    lemma_from_tactic,
+    propose_lemma,
 )
 from neural_prover.tokenizer import MetamathTokenizer
 
@@ -86,6 +93,26 @@ class NeuralTokenizerTests(unittest.TestCase):
             tactic for tactic in tactics if tactic.rule == "eq-refl"
         )
         self.assertTrue(environment.apply(state, reflexivity).after.solved)
+
+    def test_environment_excludes_target_equivalent_rule_and_counts_work(self) -> None:
+        target = Theorem(
+            "refl0",
+            [],
+            Node("|-", (Node("=", (Node("0"), Node("0"))),)),
+        )
+        environment = BackwardEnvironment(
+            self.database,
+            excluded_assertions=("eq-refl",),
+        )
+        state = ProofState.from_theorem(target)
+        tactics = environment.enumerate_tactics(
+            state,
+            include_derived=False,
+        )
+        self.assertNotIn("eq-refl", environment.assertions)
+        self.assertTrue(all(tactic.rule != "eq-refl" for tactic in tactics))
+        self.assertEqual(environment.metrics.tactic_enumerations, 1)
+        self.assertGreaterEqual(environment.metrics.candidates_returned, 0)
 
     def test_rule_variables_are_standardized_apart(self) -> None:
         target = Theorem(
@@ -153,6 +180,252 @@ class NeuralTokenizerTests(unittest.TestCase):
                     for case in famous),
                 2,
             )
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["format"], "peano-proof-benchmark-v2")
+            self.assertTrue(all(
+                "reference_rule" not in record
+                for record in payload["cases"]
+            ))
+            foundational = [
+                case for case in cases if case.origin == "foundational"
+            ]
+            self.assertTrue(all(
+                case.score_group == "sanity"
+                and not case.research_eligible
+                for case in foundational
+            ))
+            self.assertTrue(all(
+                case.score_group == "frontier"
+                and not case.research_eligible
+                for case in famous
+            ))
+
+    def test_external_verifier_result_is_fail_closed_when_unconfigured(self) -> None:
+        from neural_prover.external import verify_certificate_external
+
+        with patch(
+            "neural_prover.external.discover_metamath_executable",
+            return_value=None,
+        ):
+            certificate = Theorem(
+                "external-smoke",
+                [],
+                Node("|-", (Node("=", (Node("0"), Node("0"))),)),
+            )
+            result = verify_certificate_external(
+                certificate,
+                PEANO_NT,
+            )
+        self.assertFalse(result.passed)
+        self.assertEqual(result.status, "not_configured")
+
+    def test_mcts_defaults_require_leakage_eligible_research_cases(self) -> None:
+        from neural_prover.evaluate import MCTSEvaluationConfig
+
+        config = MCTSEvaluationConfig()
+        self.assertEqual(config.score_groups, ("research",))
+        self.assertTrue(config.require_research_eligible)
+
+    def test_lemma_vocabulary_upgrade_preserves_legacy_ids(self) -> None:
+        controls = {
+            "<PROPOSE_LEMMA>", "<LEMMA>", "<END_LEMMA>"
+        }
+        current = MetamathTokenizer.from_database(self.database)
+        legacy_tokens = [
+            token for token in current.tokens if token not in controls
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy-tokenizer.json"
+            path.write_text(json.dumps({
+                "format": "peano-metamath-tokenizer-v1",
+                "config": {"max_variables_per_type": 32, "strict": True},
+                "tokens": legacy_tokens,
+            }), encoding="utf-8")
+            legacy = MetamathTokenizer.load(path)
+        self.assertFalse(legacy.supports_lemma_actions)
+        upgraded = legacy.upgraded_for_lemma_actions()
+        self.assertTrue(upgraded.supports_lemma_actions)
+        self.assertEqual(len(upgraded), len(legacy) + 3)
+        self.assertTrue(all(
+            upgraded.token_to_id[token] == index
+            for index, token in enumerate(legacy.tokens)
+        ))
+
+    def test_lemma_action_token_round_trip(self) -> None:
+        target = Theorem(
+            "lemma-token-target",
+            [],
+            Node("|-", (Node("p"),)),
+            variable_types={"p": "wff", "q": "wff"},
+        )
+        lemma = Node("|-", (
+            Node("implies", (Node("q"), Node("p"))),
+        ))
+        tokenizer = MetamathTokenizer.from_database(self.database)
+        canonical = tokenizer.canonical_variables(target)
+        tokens = tokenizer.lemma_tactic_tokens(lemma, canonical)
+        restored = parse_tactic_tokens(
+            tokens, target, tokenizer, self.database
+        )
+        self.assertEqual(lemma_from_tactic(restored), lemma)
+
+    def test_intermediate_lemma_is_proved_before_activation(self) -> None:
+        p = Node("p")
+        q = Node("q")
+        target = Theorem(
+            "lemma-cut-target",
+            [Hypothesis("hp", Node("|-", (p,)))],
+            Node("|-", (Node("implies", (q, p)),)),
+            variable_types={"p": "wff", "q": "wff"},
+        )
+        lemma = Node("|-", (
+            Node("implies", (
+                p,
+                Node("implies", (q, p)),
+            )),
+        ))
+        environment = LemmaBackwardEnvironment(self.database)
+        initial = ProofState.from_theorem(target)
+        cut = propose_lemma(lemma)
+        cut_transition = environment.apply(initial, cut)
+        self.assertEqual(cut_transition.after.current_goal, lemma)
+        self.assertNotIn(lemma, cut_transition.after.hypotheses)
+
+        ax1 = next(
+            tactic
+            for tactic in environment.enumerate_tactics(
+                cut_transition.after, include_derived=False
+            )
+            if tactic.rule == "ax-1"
+            and environment.apply(
+                cut_transition.after, tactic
+            ).after.current_goal == target.conclusion
+        )
+        lemma_transition = environment.apply(
+            cut_transition.after, ax1
+        )
+        self.assertIn(lemma, lemma_transition.after.hypotheses)
+        self.assertEqual(
+            lemma_transition.after.current_goal, target.conclusion
+        )
+        axmp = next(
+            tactic
+            for tactic in environment.enumerate_tactics(
+                lemma_transition.after, include_derived=True
+            )
+            if tactic.rule == "ax-mp"
+            and environment.apply(
+                lemma_transition.after, tactic
+            ).after.solved
+        )
+        final_transition = environment.apply(
+            lemma_transition.after, axmp
+        )
+
+        from neural_prover.search import SearchResult
+
+        transitions = (
+            cut_transition, lemma_transition, final_transition
+        )
+        result = SearchResult(
+            True,
+            3,
+            4,
+            tuple(item.tactic for item in transitions),
+            transitions,
+            final_transition.after,
+        )
+        certificate = compile_certificate(
+            target, result, self.database, name="lemma_cut"
+        )
+        verify_certificate(certificate, self.database)
+        self.assertNotIn("<PROPOSE_LEMMA>", certificate.proof.source_labels)
+
+    def test_mcts_closes_a_decomposed_lemma_proof(self) -> None:
+        from neural_prover.hybrid import HybridActions
+        from neural_prover.lemma import (
+            LemmaActionGenerator,
+            LemmaGeneratorConfig,
+        )
+        from neural_prover.mcts import MCTSConfig, ProofMCTS
+        from neural_prover.rl import ReplayBuffer
+        from neural_prover.search import HeuristicPolicy
+
+        p = Node("p")
+        q = Node("q")
+        target = Theorem(
+            "lemma-mcts-target",
+            [Hypothesis("hp", Node("|-", (p,)))],
+            Node("|-", (Node("implies", (q, p)),)),
+            variable_types={"p": "wff", "q": "wff"},
+        )
+        lemma = Node("|-", (
+            Node("implies", (
+                p,
+                Node("implies", (q, p)),
+            )),
+        ))
+        environment = LemmaBackwardEnvironment(self.database)
+        initial = ProofState.from_theorem(target)
+        cut = propose_lemma(lemma)
+        generated = LemmaActionGenerator(
+            environment,
+            LemmaGeneratorConfig(max_lemma_candidates=12),
+        ).actions(initial)
+        self.assertIn(cut, generated.constructions)
+
+        class FixedDecompositionGenerator:
+            def actions(inner_self, state):
+                if state == initial:
+                    return HybridActions((cut,), ())
+                tactics = environment.enumerate_tactics(
+                    state, include_derived=True
+                )
+                if state.current_goal == lemma:
+                    selected = next(
+                        tactic for tactic in tactics
+                        if tactic.rule == "ax-1"
+                        and environment.apply(
+                            state, tactic
+                        ).after.current_goal == target.conclusion
+                    )
+                else:
+                    selected = next(
+                        tactic for tactic in tactics
+                        if tactic.rule == "ax-mp"
+                        and environment.apply(state, tactic).after.solved
+                    )
+                return HybridActions((selected,), ())
+
+        result = ProofMCTS(
+            environment,
+            FixedDecompositionGenerator(),
+            HeuristicPolicy(environment),
+            MCTSConfig(
+                simulations=8,
+                max_depth=5,
+                branching=2,
+                dirichlet_fraction=0.0,
+            ),
+        ).prove(initial)
+        self.assertTrue(result.search.solved)
+        self.assertEqual(result.search.actions[0], cut)
+        certificate = compile_certificate(
+            target, result.search, self.database, name="lemma_mcts"
+        )
+        verify_certificate(certificate, self.database)
+
+        tokenizer = MetamathTokenizer.from_database(self.database)
+        replay = ReplayBuffer()
+        self.assertGreater(replay.add_mcts(
+            result, tokenizer, environment
+        ), 0)
+        lemma_token_id = tokenizer.token_to_id["<PROPOSE_LEMMA>"]
+        self.assertTrue(any(
+            lemma_token_id in action_ids
+            for example in replay.examples
+            for action_ids in example.action_ids
+        ))
 
 
 @unittest.skipUnless(TORCH_AVAILABLE, "PyTorch is not visible in this sandbox")
@@ -168,7 +441,6 @@ class TorchNeuralTests(unittest.TestCase):
             ProofTransformer,
             ProofTransformerConfig,
         )
-
         config = ProofTransformerConfig(
             vocab_size=64,
             pad_id=0,
@@ -189,6 +461,195 @@ class TorchNeuralTests(unittest.TestCase):
         )
         self.assertEqual(tuple(logits.shape), (2, 7, 64))
         self.assertEqual(tuple(value.shape), (2,))
+
+    def test_continuous_latent_reasoning_and_checkpoint_upgrade(self) -> None:
+        import torch
+
+        from neural_prover.latent_model import (
+            LatentProofTransformer,
+            LatentReasoningConfig,
+        )
+        from neural_prover.model import (
+            ProofTransformer,
+            ProofTransformerConfig,
+        )
+        from neural_prover.latent_train import latent_policy_value_loss
+
+        controls = {
+            "<PROPOSE_LEMMA>", "<LEMMA>", "<END_LEMMA>"
+        }
+        full = MetamathTokenizer.from_database(self.database)
+        legacy = MetamathTokenizer(
+            [token for token in full.tokens if token not in controls],
+            preserve_token_order=True,
+        )
+        upgraded = legacy.upgraded_for_lemma_actions()
+        config = ProofTransformerConfig(
+            vocab_size=len(legacy),
+            pad_id=legacy.pad_id,
+            bos_id=legacy.bos_id,
+            eos_id=legacy.eos_id,
+            d_model=16,
+            nhead=4,
+            num_encoder_layers=1,
+            num_decoder_layers=1,
+            dim_feedforward=32,
+            max_state_tokens=16,
+            max_action_tokens=12,
+        )
+        base = ProofTransformer(config)
+        with tempfile.TemporaryDirectory() as directory:
+            base_path = Path(directory) / "base.pt"
+            latent_path = Path(directory) / "latent.pt"
+            base.save_checkpoint(base_path)
+            latent, upgrade = LatentProofTransformer.from_base_checkpoint(
+                base_path,
+                upgraded,
+                LatentReasoningConfig(
+                    max_thought_steps=4,
+                    min_thought_steps=2,
+                    halt_threshold=0.8,
+                ),
+            )
+            self.assertEqual(
+                upgrade["vocabulary_expansion"]["old_size"],
+                len(legacy),
+            )
+            self.assertTrue(torch.equal(
+                latent.token_embedding.weight[:len(legacy)],
+                base.token_embedding.weight,
+            ))
+            with torch.no_grad():
+                latent.halt_head.weight.zero_()
+                latent.halt_head.bias.fill_(20.0)
+            latent.eval()
+            state = torch.randint(4, len(legacy), (1, 8))
+            candidates = torch.randint(4, len(legacy), (3, 7))
+            candidates[0, 1] = upgraded.token_to_id[
+                "<PROPOSE_LEMMA>"
+            ]
+            scores, value = latent.score_candidates(state, candidates)
+            self.assertEqual(tuple(scores.shape), (3,))
+            self.assertEqual(tuple(value.shape), (1,))
+            self.assertEqual(latent.last_reasoning_steps, 2)
+            self.assertEqual(latent.reasoning_metrics()[
+                "reasoning_mode"
+            ], "continuous_latent")
+            self.assertEqual(latent.ponder_loss().ndim, 0)
+            latent.train()
+            train_states = torch.randint(4, len(legacy), (2, 8))
+            train_actions = torch.randint(4, len(legacy), (2, 7))
+            loss, parts = latent_policy_value_loss(
+                latent,
+                train_states,
+                train_actions,
+                torch.tensor([1.0, 0.0]),
+            )
+            loss.backward()
+            self.assertIsNotNone(latent.halt_head.weight.grad)
+            self.assertGreaterEqual(
+                float(parts["ponder_loss"].detach()), 0.0
+            )
+            latent.save_checkpoint(latent_path)
+            restored, _ = LatentProofTransformer.load_checkpoint(
+                latent_path
+            )
+        self.assertEqual(
+            restored.config.vocab_size, len(upgraded)
+        )
+        self.assertEqual(
+            restored.reasoning_config.max_thought_steps, 4
+        )
+
+    def test_structured_candidate_head_scores_and_round_trips(self) -> None:
+        import torch
+
+        from neural_prover.model import (
+            ProofTransformer,
+            ProofTransformerConfig,
+        )
+
+        config = ProofTransformerConfig(
+            vocab_size=64,
+            pad_id=0,
+            bos_id=2,
+            eos_id=3,
+            d_model=16,
+            nhead=4,
+            num_encoder_layers=1,
+            num_decoder_layers=1,
+            dim_feedforward=32,
+            max_state_tokens=16,
+            max_action_tokens=12,
+        )
+        model = ProofTransformer(config)
+        logits, value = model.score_candidates(
+            torch.randint(4, 64, (1, 8)),
+            torch.randint(4, 64, (3, 7)),
+        )
+        self.assertEqual(tuple(logits.shape), (3,))
+        self.assertEqual(tuple(value.shape), (1,))
+        model.candidate_head_trained = True
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "candidate.pt"
+            model.save_checkpoint(checkpoint)
+            restored, payload = ProofTransformer.load_checkpoint(checkpoint)
+        self.assertTrue(restored.candidate_head_trained)
+        self.assertEqual(
+            payload["metadata"]["candidate_policy"]["mode"],
+            "finite-kernel-candidate-index",
+        )
+
+    def test_alpha_zero_replay_trains_candidate_head(self) -> None:
+        from neural_prover.model import (
+            ProofTransformer,
+            ProofTransformerConfig,
+        )
+        from neural_prover.rl import (
+            ReinforcementConfig,
+            ReplayBuffer,
+            ReplayExample,
+            reinforce_model,
+        )
+
+        config = ProofTransformerConfig(
+            vocab_size=32,
+            pad_id=0,
+            bos_id=2,
+            eos_id=3,
+            d_model=16,
+            nhead=4,
+            num_encoder_layers=1,
+            num_decoder_layers=1,
+            dim_feedforward=32,
+            max_state_tokens=12,
+            max_action_tokens=10,
+        )
+        replay = ReplayBuffer()
+        replay.examples.append(ReplayExample(
+            state_ids=(2, 4, 5, 3),
+            action_ids=((2, 6, 3), (2, 7, 3)),
+            policy_target=(0.75, 0.25),
+            value_target=1.0,
+        ))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            initial = root / "initial.pt"
+            updated = root / "updated.pt"
+            ProofTransformer(config).save_checkpoint(initial)
+            reinforce_model(
+                initial,
+                replay,
+                updated,
+                ReinforcementConfig(
+                    epochs=1,
+                    learning_rate=1e-3,
+                    gradient_accumulation=1,
+                    device="cpu",
+                ),
+            )
+            restored, _ = ProofTransformer.load_checkpoint(updated)
+        self.assertTrue(restored.candidate_head_trained)
 
     def test_hybrid_mcts_emits_verified_certificate(self) -> None:
         from neural_prover.hybrid import HybridActionGenerator
@@ -214,12 +675,30 @@ class TorchNeuralTests(unittest.TestCase):
             MCTSConfig(simulations=30, max_depth=6),
         ).prove(ProofState.from_theorem(target))
         self.assertTrue(result.search.solved)
+        self.assertEqual(result.outcome, "certifiable_solution")
+        self.assertTrue(any(
+            experience.policy_target_valid
+            and experience.value_target_valid
+            for experience in result.experiences
+        ))
         certificate = compile_certificate(
             target,
             result.search,
             self.database,
         )
         verify_certificate(certificate, self.database)
+        from neural_prover.external import (
+            discover_metamath_executable,
+            verify_certificate_external,
+        )
+        executable = discover_metamath_executable()
+        if executable is not None:
+            external = verify_certificate_external(
+                certificate,
+                PEANO_NT,
+                executable=executable,
+            )
+            self.assertTrue(external.passed, external.output_tail)
 
     def test_scale_resume_matches_uninterrupted_training(self) -> None:
         import torch

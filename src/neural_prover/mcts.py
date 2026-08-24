@@ -60,6 +60,8 @@ class MCTSExperience:
     tactics: tuple[Tactic, ...]
     visit_probabilities: tuple[float, ...]
     value_target: float
+    policy_target_valid: bool
+    value_target_valid: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +69,7 @@ class MCTSResult:
     search: SearchResult
     root_visits: tuple[tuple[Tactic, int], ...]
     experiences: tuple[MCTSExperience, ...]
+    outcome: str
 
 
 class ProofMCTS:
@@ -222,8 +225,10 @@ class ProofMCTS:
         experiences: list[MCTSExperience] = []
         for node in self._expanded_nodes:
             total = sum(edge.visits for edge in node.edges)
-            if total == 0:
+            proven_dead_end = node.expanded and not node.edges
+            if total == 0 and not proven_dead_end:
                 continue
+            solved_path = id(node) in solution_node_ids
             experiences.append(MCTSExperience(
                 state=node.state,
                 tactics=tuple(edge.tactic for edge in node.edges),
@@ -234,10 +239,12 @@ class ProofMCTS:
                     0.0,
                     (
                         1.0 - self.config.step_penalty * node.depth
-                        if id(node) in solution_node_ids
+                        if solved_path
                         else 0.0
                     ),
                 ),
+                policy_target_valid=solved_path,
+                value_target_valid=solved_path or proven_dead_end,
             ))
 
         if solution is None:
@@ -280,6 +287,8 @@ class ProofMCTS:
                 (edge.tactic, edge.visits) for edge in root.edges
             ),
             experiences=tuple(experiences),
+            outcome=("certifiable_solution" if solution is not None
+                     else "budget_exhausted"),
         )
 
     def _walk(self, root: MCTSNode):

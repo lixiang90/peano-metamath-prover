@@ -70,12 +70,20 @@ class MetamathParser:
         self.database.source_path = str(source.resolve())
         tokens = self._tokens_with_includes(source.resolve(), set())
         self._parse_tokens(list(tokens))
+        self._record_active_hypotheses()
         return self.database
 
     def parse_text(self, text: str, source_name: str = "<string>") -> Database:
         self.database.source_path = source_name
         self._parse_tokens(_lex(text))
+        self._record_active_hypotheses()
         return self.database
+
+    def _record_active_hypotheses(self) -> None:
+        self.database.active_floating_hypotheses = {
+            label: Hypothesis(label, Node(typecode, (Node(variable),)))
+            for label, typecode, variable in self._floating
+        }
 
     def _tokens_with_includes(
         self,

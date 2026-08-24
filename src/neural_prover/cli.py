@@ -77,6 +77,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=20,
     )
+    benchmark.add_argument(
+        "--training-corpus",
+        action="append",
+        default=[],
+        help="training corpus directory to exclude from research targets",
+    )
+    benchmark.add_argument(
+        "--reference-output",
+        help="private sidecar for reference rule/depth metadata",
+    )
 
     train = commands.add_parser(
         "train",
@@ -105,6 +115,10 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--medium-sims", type=int, default=300)
     evaluate.add_argument("--hard-sims", type=int, default=1_000)
     evaluate.add_argument("--frontier-sims", type=int, default=100)
+    evaluate.add_argument("--external-verifier")
+    evaluate.add_argument(
+        "--require-external-verification", action="store_true"
+    )
 
     evaluate_mcts = commands.add_parser(
         "evaluate-mcts",
@@ -121,6 +135,15 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_mcts.add_argument("--branching", type=int, default=32)
     evaluate_mcts.add_argument(
         "--cases-per-difficulty", type=int, default=5
+    )
+    evaluate_mcts.add_argument("--seeds", default="17,19,23")
+    evaluate_mcts.add_argument(
+        "--policies",
+        default="uniform,heuristic,neural,hybrid",
+    )
+    evaluate_mcts.add_argument("--external-verifier")
+    evaluate_mcts.add_argument(
+        "--require-external-verification", action="store_true"
     )
     evaluate_mcts.add_argument(
         "--include-frontier", action="store_true"
@@ -143,6 +166,51 @@ def build_parser() -> argparse.ArgumentParser:
     prove.add_argument("--certificate")
     prove.add_argument("--device", default="auto")
     prove.add_argument("--simulations", type=int, default=800)
+    prove.add_argument("--max-depth", type=int, default=24)
+    prove.add_argument("--branching", type=int, default=48)
+    prove.add_argument("--seed", type=int, default=7)
+    prove.add_argument(
+        "--policy",
+        choices=("uniform", "heuristic", "neural", "hybrid"),
+        default="hybrid",
+    )
+    prove.add_argument("--external-verifier")
+    prove.add_argument(
+        "--require-external-verification", action="store_true"
+    )
+
+    init_latent = commands.add_parser(
+        "init-latent",
+        help="upgrade a checkpoint with lemma tokens and latent thought",
+    )
+    init_latent.add_argument("base_checkpoint")
+    init_latent.add_argument("base_tokenizer")
+    init_latent.add_argument("output_checkpoint")
+    init_latent.add_argument("output_tokenizer")
+    init_latent.add_argument("--max-thought-steps", type=int, default=6)
+    init_latent.add_argument("--min-thought-steps", type=int, default=1)
+    init_latent.add_argument("--halt-threshold", type=float, default=0.85)
+    init_latent.add_argument("--ponder-cost", type=float, default=1e-3)
+
+    prove_decomposed = commands.add_parser(
+        "prove-decomposed",
+        help="prove one case with latent thought and intermediate lemmas",
+    )
+    prove_decomposed.add_argument("checkpoint")
+    prove_decomposed.add_argument("tokenizer")
+    prove_decomposed.add_argument("benchmark")
+    prove_decomposed.add_argument("case_id")
+    prove_decomposed.add_argument("database")
+    prove_decomposed.add_argument("--certificate")
+    prove_decomposed.add_argument("--device", default="auto")
+    prove_decomposed.add_argument("--simulations", type=int, default=100)
+    prove_decomposed.add_argument("--max-depth", type=int, default=20)
+    prove_decomposed.add_argument("--branching", type=int, default=24)
+    prove_decomposed.add_argument("--seed", type=int, default=7)
+    prove_decomposed.add_argument("--external-verifier")
+    prove_decomposed.add_argument(
+        "--require-external-verification", action="store_true"
+    )
 
     reinforce = commands.add_parser(
         "reinforce",
@@ -317,6 +385,8 @@ def main(argv: list[str] | None = None) -> int:
                 depth_parent_bias=args.depth_parent_bias,
                 synthetic_per_difficulty=
                     args.synthetic_per_difficulty,
+                training_corpora=tuple(args.training_corpus),
+                reference_output=args.reference_output,
             ),
         )
         print(json.dumps(manifest["counts"], ensure_ascii=False))
@@ -358,6 +428,9 @@ def main(argv: list[str] | None = None) -> int:
                 medium_simulations=args.medium_sims,
                 hard_simulations=args.hard_sims,
                 frontier_simulations=args.frontier_sims,
+                external_verifier=args.external_verifier,
+                require_external_verification=
+                    args.require_external_verification,
             ),
         )
         print(json.dumps({
@@ -396,6 +469,15 @@ def main(argv: list[str] | None = None) -> int:
                     for item in args.origins.split(",")
                     if item.strip()
                 ),
+                seeds=_seeds(args.seeds),
+                policy_modes=tuple(
+                    item.strip()
+                    for item in args.policies.split(",")
+                    if item.strip()
+                ),
+                external_verifier=args.external_verifier,
+                require_external_verification=
+                    args.require_external_verification,
             ),
         )
         print(json.dumps({
@@ -587,12 +669,31 @@ def main(argv: list[str] | None = None) -> int:
                 report["peak_cuda_memory_bytes"],
         }, ensure_ascii=False))
         return 0
-    if args.command == "prove":
-        import torch
+    if args.command == "init-latent":
+        from .decomposed import initialize_latent_checkpoint
+        from .latent_model import LatentReasoningConfig
 
-        from .mcts import MCTSConfig, ProofMCTS
-        from .model import ProofTransformer
-        from .search import HybridPolicy, TransformerPolicy
+        summary = initialize_latent_checkpoint(
+            args.base_checkpoint,
+            args.base_tokenizer,
+            args.output_checkpoint,
+            args.output_tokenizer,
+            LatentReasoningConfig(
+                max_thought_steps=args.max_thought_steps,
+                min_thought_steps=args.min_thought_steps,
+                halt_threshold=args.halt_threshold,
+                ponder_cost=args.ponder_cost,
+            ),
+        )
+        print(json.dumps(summary, ensure_ascii=False))
+        return 0
+    if args.command == "prove-decomposed":
+        from .decomposed import (
+            DecomposedProver,
+            DecomposedProverConfig,
+        )
+        from .external import verify_certificate_external
+        from .latent_model import LatentProofTransformer
 
         database = parse(args.database)
         cases = {
@@ -601,7 +702,81 @@ def main(argv: list[str] | None = None) -> int:
         }
         if args.case_id not in cases:
             raise SystemExit(f"unknown benchmark case {args.case_id}")
-        target = cases[args.case_id].theorem(database)
+        case = cases[args.case_id]
+        target = case.theorem(database)
+        tokenizer = MetamathTokenizer.load(args.tokenizer)
+        model, _ = LatentProofTransformer.load_checkpoint(
+            args.checkpoint,
+            map_location=args.device if args.device != "auto" else "cpu",
+        )
+        prover = DecomposedProver(
+            database,
+            model,
+            tokenizer,
+            DecomposedProverConfig(
+                simulations=args.simulations,
+                max_depth=args.max_depth,
+                branching=args.branching,
+                seed=args.seed,
+                device=args.device,
+            ),
+            excluded_assertions=case.excluded_labels,
+        )
+        result = prover.prove(target)
+        payload = {
+            "case_id": args.case_id,
+            **prover.metrics(result),
+            "actions": [
+                tactic.rule for tactic in result.search.actions
+            ],
+            "internal_verified": False,
+            "external_verification": {"status": "not_run"},
+            "certified": False,
+        }
+        if result.search.solved:
+            certificate = compile_certificate(
+                target,
+                result.search,
+                database,
+                name=f"decomposed_{args.case_id}",
+            )
+            verify_certificate(certificate, database)
+            external = verify_certificate_external(
+                certificate,
+                args.database,
+                executable=args.external_verifier,
+            )
+            payload["internal_verified"] = True
+            payload["external_verification"] = external.to_record()
+            payload["certified"] = (
+                external.passed
+                if args.require_external_verification else True
+            )
+            if args.certificate:
+                export_certificate(certificate, args.certificate)
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0
+    if args.command == "prove":
+        import torch
+
+        from .mcts import MCTSConfig, ProofMCTS
+        from .model import ProofTransformer
+        from .search import (
+            HeuristicPolicy,
+            HybridPolicy,
+            TransformerPolicy,
+            UniformPolicy,
+        )
+
+        database = parse(args.database)
+        cases = {
+            case.case_id: case
+            for case in load_benchmarks(args.benchmark)
+        }
+        if args.case_id not in cases:
+            raise SystemExit(f"unknown benchmark case {args.case_id}")
+        case = cases[args.case_id]
+        target = case.theorem(database)
         tokenizer = MetamathTokenizer.load(
             Path(args.corpus) / "tokenizer.json"
         )
@@ -614,22 +789,37 @@ def main(argv: list[str] | None = None) -> int:
             args.checkpoint,
             map_location=device,
         )
-        environment = BackwardEnvironment(database)
+        environment = BackwardEnvironment(
+            database, excluded_assertions=case.excluded_labels
+        )
         neural = TransformerPolicy(
             model,
             tokenizer,
             environment,
             device,
         )
-        policy = HybridPolicy(environment, neural)
+        if args.policy == "uniform":
+            policy = UniformPolicy()
+        elif args.policy == "heuristic":
+            policy = HeuristicPolicy(environment)
+        elif args.policy == "neural":
+            policy = neural
+        else:
+            policy = HybridPolicy(environment, neural)
         result = ProofMCTS(
             environment,
             HybridActionGenerator(environment),
             policy,
-            MCTSConfig(simulations=args.simulations),
+            MCTSConfig(
+                simulations=args.simulations,
+                max_depth=args.max_depth,
+                branching=args.branching,
+                seed=args.seed,
+            ),
         ).prove(ProofState.from_theorem(target))
         payload = {
             "case_id": args.case_id,
+            "policy": args.policy,
             "solved": result.search.solved,
             "simulations": result.search.simulations,
             "actions": [
@@ -644,7 +834,19 @@ def main(argv: list[str] | None = None) -> int:
                 name=f"mcts_{args.case_id}",
             )
             verify_certificate(certificate, database)
-            payload["certified"] = True
+            from .external import verify_certificate_external
+
+            external = verify_certificate_external(
+                certificate,
+                args.database,
+                executable=args.external_verifier,
+            )
+            payload["internal_verified"] = True
+            payload["external_verification"] = external.to_record()
+            payload["certified"] = (
+                external.passed
+                if args.require_external_verification else True
+            )
             if args.certificate:
                 export_certificate(certificate, args.certificate)
         print(json.dumps(payload, ensure_ascii=False))

@@ -10,6 +10,8 @@ import torch
 from torch.nn import functional as F
 
 from .environment import (
+    LEMMA_BINDING,
+    PROPOSE_LEMMA_RULE,
     BackwardEnvironment,
     InvalidTactic,
     ProofState,
@@ -34,6 +36,18 @@ class TacticPolicy(Protocol):
         tactics: list[Tactic],
     ) -> list[RankedTactic]:
         ...
+
+
+class UniformPolicy:
+    """Unlearned symbolic baseline over the exact same legal candidates."""
+
+    def rank(
+        self,
+        state: ProofState,
+        tactics: list[Tactic],
+    ) -> list[RankedTactic]:
+        del state
+        return [RankedTactic(tactic, 0.0, 0.5) for tactic in tactics]
 
 
 class HeuristicPolicy:
@@ -106,6 +120,29 @@ class TransformerPolicy:
         self.tokenizer = tokenizer
         self.environment = environment
         self.device = torch.device(device)
+        self.candidates_scored = 0
+        self.action_tokens_scored = 0
+
+    @property
+    def scoring_mode(self) -> str:
+        return (
+            "candidate_index"
+            if self.model.candidate_head_trained
+            else "autoregressive_bootstrap"
+        )
+
+    def metrics(self) -> dict[str, int | str | float]:
+        metrics: dict[str, int | str | float] = {
+            "scoring_mode": self.scoring_mode,
+            "candidates_scored": self.candidates_scored,
+            "action_tokens_scored": self.action_tokens_scored,
+        }
+        reasoning_metrics = getattr(
+            self.model, "reasoning_metrics", None
+        )
+        if callable(reasoning_metrics):
+            metrics.update(reasoning_metrics())
+        return metrics
 
     @torch.no_grad()
     def rank(
@@ -133,7 +170,7 @@ class TransformerPolicy:
             dtype=torch.long,
             device=self.device,
         )
-        memory, memory_padding, _ = self.model.encode(state_ids)
+        memory, memory_padding, state_value = self.model.encode(state_ids)
         entries: list[tuple[Tactic, list[int], ProofState]] = []
         for tactic in tactics:
             if tactic.rule == "<ASSUMPTION>":
@@ -144,6 +181,15 @@ class TransformerPolicy:
                     "<END_ACTION>",
                     "<EOS>",
                 ]
+            elif tactic.rule == PROPOSE_LEMMA_RULE:
+                if not self.tokenizer.supports_lemma_actions:
+                    continue
+                lemma = tactic.substitution_dict().get(LEMMA_BINDING)
+                if lemma is None:
+                    continue
+                tokens = self.tokenizer.lemma_tactic_tokens(
+                    lemma, canonical
+                )
             else:
                 assertion = self.environment.assertions[tactic.rule]
                 order = [
@@ -182,23 +228,30 @@ class TransformerPolicy:
                 dtype=torch.long,
                 device=self.device,
             )
-        repeated_memory = memory.expand(len(entries), -1, -1)
-        repeated_padding = memory_padding.expand(len(entries), -1)
-        logits = self.model.decode(
-            action[:, :-1],
-            repeated_memory,
-            repeated_padding,
-        )
-        log_probs = F.log_softmax(logits, dim=-1)
-        target = action[:, 1:]
-        target_mask = target.ne(self.tokenizer.pad_id)
-        token_scores = log_probs.gather(
-            -1, target.unsqueeze(-1)
-        ).squeeze(-1)
-        policy_scores = (
-            (token_scores * target_mask).sum(dim=1)
-            / target_mask.sum(dim=1).clamp_min(1)
-        )
+        self.candidates_scored += len(entries)
+        self.action_tokens_scored += sum(len(ids) for _, ids, _ in entries)
+        if self.model.candidate_head_trained:
+            policy_scores, _ = self.model.score_candidates_from_memory(
+                action, memory, memory_padding, state_value
+            )
+        else:
+            repeated_memory = memory.expand(len(entries), -1, -1)
+            repeated_padding = memory_padding.expand(len(entries), -1)
+            logits = self.model.decode(
+                action[:, :-1],
+                repeated_memory,
+                repeated_padding,
+            )
+            log_probs = F.log_softmax(logits, dim=-1)
+            target = action[:, 1:]
+            target_mask = target.ne(self.tokenizer.pad_id)
+            token_scores = log_probs.gather(
+                -1, target.unsqueeze(-1)
+            ).squeeze(-1)
+            policy_scores = (
+                (token_scores * target_mask).sum(dim=1)
+                / target_mask.sum(dim=1).clamp_min(1)
+            )
 
         next_values = torch.ones(
             len(entries),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import itertools
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Iterable
 
 from metamath_generator.model import (
@@ -24,6 +24,25 @@ from .tokenizer import CanonicalVariables, MetamathTokenizer
 
 class InvalidTactic(ValueError):
     pass
+
+
+PROPOSE_LEMMA_RULE = "<PROPOSE_LEMMA>"
+LEMMA_BINDING = "__lemma_value__"
+LEMMA_COMMIT_OP = "__lemma_commit__"
+
+
+@dataclass(slots=True)
+class EnvironmentMetrics:
+    apply_requests: int = 0
+    apply_cache_hits: int = 0
+    transition_evaluations: int = 0
+    invalid_tactics: int = 0
+    tactic_enumerations: int = 0
+    tactic_cache_hits: int = 0
+    candidates_returned: int = 0
+
+    def to_record(self) -> dict[str, int]:
+        return asdict(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,12 +122,22 @@ class BackwardEnvironment:
         self,
         database: Database,
         lemmas: Iterable[Theorem] = (),
+        *,
+        excluded_assertions: Iterable[str] = (),
     ) -> None:
         self.database = database
-        self.assertions = dict(database.logical_assertions)
+        excluded = set(excluded_assertions)
+        self.assertions = {
+            label: theorem
+            for label, theorem in database.logical_assertions.items()
+            if label not in excluded
+        }
         self.assertions.update({
-            theorem.name: theorem for theorem in lemmas
+            theorem.name: theorem
+            for theorem in lemmas
+            if theorem.name not in excluded
         })
+        self.metrics = EnvironmentMetrics()
         self._parser = MetamathParser()
         self._parser.database = database
         self._type_cache: dict[
@@ -135,6 +164,9 @@ class BackwardEnvironment:
         self._well_typed_cache: dict[
             tuple[tuple[Node, ...], tuple[tuple[str, str], ...]], bool
         ] = {}
+
+    def reset_metrics(self) -> None:
+        self.metrics = EnvironmentMetrics()
 
     @staticmethod
     def _unify_schema(
@@ -323,10 +355,25 @@ class BackwardEnvironment:
         state: ProofState,
         tactic: Tactic,
     ) -> Transition:
+        self.metrics.apply_requests += 1
         cache_key = (state, tactic)
         cached = self._transition_cache.get(cache_key)
         if cached is not None:
+            self.metrics.apply_cache_hits += 1
             return cached
+        self.metrics.transition_evaluations += 1
+        try:
+            return self._apply_uncached(state, tactic, cache_key)
+        except InvalidTactic:
+            self.metrics.invalid_tactics += 1
+            raise
+
+    def _apply_uncached(
+        self,
+        state: ProofState,
+        tactic: Tactic,
+        cache_key: tuple[ProofState, Tactic],
+    ) -> Transition:
         if state.solved:
             raise InvalidTactic("cannot act on a solved state")
         if tactic.rule == "<ASSUMPTION>":
@@ -502,7 +549,7 @@ class BackwardEnvironment:
         seen = set(nodes)
         closed_assertions = [
             assertion
-            for assertion in self.database.logical_assertions.values()
+            for assertion in self.assertions.values()
             if (
                 not assertion.hypotheses
                 and assertion.conclusion.op == "|-"
@@ -688,6 +735,7 @@ class BackwardEnvironment:
         max_tactics: int = 256,
         include_derived: bool = True,
     ) -> list[Tactic]:
+        self.metrics.tactic_enumerations += 1
         cache_key = (
             state,
             max_candidates_per_variable,
@@ -696,6 +744,8 @@ class BackwardEnvironment:
         )
         cached = self._tactic_cache.get(cache_key)
         if cached is not None:
+            self.metrics.tactic_cache_hits += 1
+            self.metrics.candidates_returned += len(cached)
             return list(cached)
         if state.solved:
             return []
@@ -751,8 +801,10 @@ class BackwardEnvironment:
                 tactics.append(tactic)
                 if len(tactics) >= max_tactics:
                     self._tactic_cache[cache_key] = tuple(tactics)
+                    self.metrics.candidates_returned += len(tactics)
                     return tactics
         self._tactic_cache[cache_key] = tuple(tactics)
+        self.metrics.candidates_returned += len(tactics)
         return tactics
 
 
@@ -765,6 +817,37 @@ def parse_tactic_tokens(
     sequence = list(tokens)
     if "<EOS>" in sequence:
         sequence = sequence[:sequence.index("<EOS>") + 1]
+    if "<PROPOSE_LEMMA>" in sequence:
+        try:
+            start = sequence.index("<LEMMA>") + 1
+            end = sequence.index("<END_LEMMA>", start)
+        except ValueError as exc:
+            raise InvalidTactic(
+                "lemma action lacks LEMMA delimiters"
+            ) from exc
+        canonical = tokenizer.canonical_variables(state_theorem)
+        parser = MetamathParser()
+        parser.database = database
+        old_types = dict(database.variable_types)
+        database.variable_types.update(state_theorem.variable_types)
+        try:
+            lemma = parser.parse_expression([
+                canonical.decode_symbol(item)
+                for item in sequence[start:end]
+            ])
+        except ParseError as exc:
+            raise InvalidTactic(str(exc)) from exc
+        finally:
+            database.variable_types.clear()
+            database.variable_types.update(old_types)
+        if lemma.op != "|-" or len(lemma.args) != 1:
+            raise InvalidTactic(
+                "intermediate lemma must be a |- assertion"
+            )
+        return Tactic.create(
+            PROPOSE_LEMMA_RULE,
+            {LEMMA_BINDING: lemma},
+        )
     try:
         rule_index = sequence.index("<RULE>")
         subst_index = sequence.index("<SUBST>")

@@ -61,6 +61,17 @@ class ProofTransformer(nn.Module):
             nn.GELU(),
             nn.Linear(config.d_model, 1),
         )
+        # A candidate-index head chooses among symbolically enumerated tactics.
+        # It never generates a substitution token-by-token.  Existing v1
+        # checkpoints can load without these weights and keep using the
+        # autoregressive scorer until MCTS replay trains the head.
+        self.candidate_state = nn.Linear(config.d_model, config.d_model)
+        self.candidate_action = nn.Linear(config.d_model, config.d_model)
+        self.candidate_score = nn.Sequential(
+            nn.GELU(),
+            nn.Linear(config.d_model, 1),
+        )
+        self.candidate_head_trained = False
         self.embedding_scale = math.sqrt(config.d_model)
         self.apply(self._initialize)
 
@@ -126,6 +137,55 @@ class ProofTransformer(nn.Module):
         ).clamp_min(1.0)
         value = torch.sigmoid(self.value_head(pooled).squeeze(-1))
         return memory, padding, value
+
+    def score_candidates(
+        self,
+        state_ids: Tensor,
+        candidate_ids: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Score a finite candidate set and return index logits plus value.
+
+        ``state_ids`` must contain one proof state and ``candidate_ids`` has
+        shape ``[candidate, token]``.  Candidate tokens are only an encoding
+        of already kernel-valid structured tactics; no token is generated.
+        """
+
+        if state_ids.shape[0] != 1:
+            raise ValueError("candidate scoring currently accepts one state")
+        if candidate_ids.ndim != 2 or candidate_ids.shape[0] == 0:
+            raise ValueError("candidate_ids must contain at least one action")
+        memory, padding, value = self.encode(state_ids)
+        return self.score_candidates_from_memory(
+            candidate_ids, memory, padding, value
+        )
+
+    def score_candidates_from_memory(
+        self,
+        candidate_ids: Tensor,
+        memory: Tensor,
+        padding: Tensor,
+        value: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Score candidates using a state encoding already computed once."""
+
+        state_weights = (~padding).unsqueeze(-1).to(memory.dtype)
+        state_pooled = (memory * state_weights).sum(dim=1) / (
+            state_weights.sum(dim=1).clamp_min(1.0)
+        )
+        candidate_padding = candidate_ids.eq(self.config.pad_id)
+        candidate = self._embed(candidate_ids, self.action_position)
+        candidate_weights = (~candidate_padding).unsqueeze(-1).to(
+            candidate.dtype
+        )
+        candidate_pooled = (
+            (candidate * candidate_weights).sum(dim=1)
+            / candidate_weights.sum(dim=1).clamp_min(1.0)
+        )
+        hidden = (
+            self.candidate_state(state_pooled).expand_as(candidate_pooled)
+            + self.candidate_action(candidate_pooled)
+        )
+        return self.candidate_score(hidden).squeeze(-1), value
 
     def decode(
         self,
@@ -253,13 +313,18 @@ class ProofTransformer(nn.Module):
         optimizer_state: dict | None = None,
         metadata: dict | None = None,
     ) -> None:
+        checkpoint_metadata = dict(metadata or {})
+        checkpoint_metadata["candidate_policy"] = {
+            "trained": bool(self.candidate_head_trained),
+            "mode": "finite-kernel-candidate-index",
+        }
         torch.save(
             {
                 "format": "peano-proof-transformer-v1",
                 "config": asdict(self.config),
                 "model_state": self.state_dict(),
                 "optimizer_state": optimizer_state,
-                "metadata": metadata or {},
+                "metadata": checkpoint_metadata,
             },
             Path(path),
         )
@@ -279,5 +344,22 @@ class ProofTransformer(nn.Module):
         if payload.get("format") != "peano-proof-transformer-v1":
             raise ValueError("unsupported proof Transformer checkpoint")
         model = cls(ProofTransformerConfig(**payload["config"]))
-        model.load_state_dict(payload["model_state"])
+        missing, unexpected = model.load_state_dict(
+            payload["model_state"], strict=False
+        )
+        allowed_missing = {
+            name
+            for name in model.state_dict()
+            if name.startswith("candidate_")
+        }
+        if unexpected or set(missing) - allowed_missing:
+            raise ValueError(
+                "checkpoint state is incompatible: "
+                f"missing={missing}, unexpected={unexpected}"
+            )
+        model.candidate_head_trained = bool(
+            payload.get("metadata", {})
+            .get("candidate_policy", {})
+            .get("trained", False)
+        )
         return model, payload

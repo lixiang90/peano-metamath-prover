@@ -17,7 +17,11 @@ from metamath_generator.model import (
 from metamath_generator.unification import substitute_simultaneous
 from metamath_generator.verifier import verify
 
-from .environment import Transition
+from .environment import (
+    LEMMA_BINDING,
+    PROPOSE_LEMMA_RULE,
+    Transition,
+)
 
 if TYPE_CHECKING:
     from .search import SearchResult
@@ -70,13 +74,55 @@ def _compile_tree(
     theorem: Theorem,
     database: Database,
     compiler: _SyntaxCompiler,
+    local_proofs: dict[Node, tuple[str, ...]] | None = None,
 ) -> list[str]:
+    available = local_proofs or {}
     transition = node.transition
     if transition.tactic.rule == "<ASSUMPTION>":
+        local = available.get(transition.before.current_goal)
+        if local is not None:
+            return list(local)
         return [_hypothesis_label(
             theorem,
             transition.before.current_goal,
         )]
+    if transition.tactic.rule == PROPOSE_LEMMA_RULE:
+        payload = transition.tactic.substitution_dict()
+        lemma = payload.get(LEMMA_BINDING)
+        if lemma is None or len(payload) != 1:
+            raise CertificateError("malformed intermediate-lemma action")
+        if len(node.children) != 2:
+            raise CertificateError(
+                "intermediate lemma must have lemma and continuation proofs"
+            )
+        lemma_child, continuation_child = node.children
+        if lemma_child.transition.before.current_goal != lemma:
+            raise CertificateError("lemma branch proves the wrong statement")
+        if (
+            continuation_child.transition.before.current_goal
+            != transition.before.current_goal
+        ):
+            raise CertificateError(
+                "lemma continuation proves the wrong original goal"
+            )
+        lemma_labels = tuple(_compile_tree(
+            lemma_child,
+            theorem,
+            database,
+            compiler,
+            available,
+        ))
+        extended = dict(available)
+        extended[lemma] = lemma_labels
+        # The local lemma is a proof macro, not a new axiom or theorem label.
+        # Inline it wherever the continuation consumes the activated lemma.
+        return _compile_tree(
+            continuation_child,
+            theorem,
+            database,
+            compiler,
+            extended,
+        )
     assertion = database.logical_assertions.get(
         transition.tactic.rule
     )
@@ -111,6 +157,10 @@ def _compile_tree(
         if any(h.expr == instance for h in theorem.hypotheses):
             labels.append(_hypothesis_label(theorem, instance))
             continue
+        local = available.get(instance)
+        if local is not None:
+            labels.extend(local)
+            continue
         try:
             child = next(children)
         except StopIteration as exc:
@@ -127,6 +177,7 @@ def _compile_tree(
             theorem,
             database,
             compiler,
+            available,
         ))
     try:
         next(children)
@@ -212,15 +263,35 @@ def verify_certificate(
 def export_certificate(
     certificate: Theorem,
     destination: str | Path,
+    *,
+    ambient_database: Database | None = None,
 ) -> None:
     lines = [
         "$( Neural search proof; every label is kernel replayable. $)",
     ]
-    variables = list(certificate.variable_types)
+    ambient_variables = (
+        ambient_database.variables if ambient_database is not None else set()
+    )
+    variables = [
+        variable for variable in certificate.variable_types
+        if variable not in ambient_variables
+    ]
     if variables:
         lines.append(f"$v {' '.join(variables)} $.")
     lines.append("${")
+    ambient_by_expression = {
+        hypothesis.expr: label
+        for label, hypothesis in (
+            ambient_database.active_floating_hypotheses.items()
+            if ambient_database is not None else ()
+        )
+    }
+    floating_replacements: dict[str, str] = {}
     for floating in certificate.floating:
+        ambient_label = ambient_by_expression.get(floating.expr)
+        if ambient_label is not None:
+            floating_replacements[floating.label] = ambient_label
+            continue
         lines.append(
             f"  {floating.label} $f {floating.expr.to_prefix()} $."
         )
@@ -235,7 +306,7 @@ def export_certificate(
     lines.append(
         f"  {certificate.name} $p "
         f"{certificate.conclusion.to_prefix()} $= "
-        f"{' '.join(certificate.proof.source_labels)} $."
+        f"{' '.join(floating_replacements.get(label, label) for label in certificate.proof.source_labels)} $."
     )
     lines.append("$}")
     Path(destination).write_text(

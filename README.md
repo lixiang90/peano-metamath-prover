@@ -13,9 +13,13 @@ Beta：神经网络和搜索器只能提出候选动作，成功证明必须能�
 - 一阶合一、occurs check、精确类型检查和 Metamath `$d` 约束。
 - 真空量词过滤、前提 subsumption、重复检测和数学结构质量评分。
 - 原子形式 token 的 encoder-decoder Transformer 策略/价值模型。
+- 对内核合法有限候选集合进行索引打分的结构化策略头。
+- 可验证的中间引理 cut 动作：先证明引理，再将其用于最终目标。
+- 可选的隐式连续向量思维链与学习停止头；旧模型文件和检查点保持兼容。
 - 传统动作枚举、辅助引理构造与 PUCT/MCTS 的混合搜索。
+- AlphaZero 式 MCTS 回放；预算耗尽按删失处理，不伪造负奖励。
 - 可恢复的 gzip 分片百万语料生成，以及约 100M 参数、2304 上下文训练。
-- 未压缩 Metamath 证明导出、证书编译和按源文件顺序/作用域的内核回放。
+- 未压缩 Metamath 证明导出、项目内核回放和外部 Metamath 交叉验证。
 
 ## 项目结构
 
@@ -31,23 +35,25 @@ docs/                    架构、数论定义与 Scale 实验说明
 
 ## 当前进展
 
-截至 2026-08-11，仓库已经完成第一次百万级数据、GPT-2 Small 量级模型的
-真实训练与深度压力测试：
+截至 2026-08-24，仓库已经完成 1.1M 数据、GPT-2 Small 量级模型的 10,000 步
+训练，以及第一次固定预算闭环评估：
 
-- 生成 1,000,000 条可回放动作样本，其中训练集覆盖证明深度 1–16；
+- 生成 1,100,000 条可回放动作样本，训练/验证/测试为
+  1,080,000/10,000/10,000；
 - 随机抽查 10,000 条动作，项目内符号环境回放 10,000/10,000 通过；
-- 在 RTX 3090 上训练 104,130,543 参数模型至 5,000 optimizer steps，实际
-  消费 40,000 个样本和约 3,099 万目标 token；
-- 5,000 条隔离测试的 teacher-forced token accuracy 为 88.31%；
-- 独立符号压力搜索生成到证明深度 19，神经压力测试覆盖到深度 17；
-- 深度 14/15/16/17 的 token accuracy 约为
-  80.37%/80.69%/80.03%/76.50%。
+- 在 RTX 5090 上训练 105,312,496 参数模型至 10,000 optimizer steps，实际
+  消费 80,000 个样本和约 7,304 万目标 token；
+- 5,000 条隔离测试的 teacher-forced token accuracy 为 92.26%，完整参考动作
+  准确率仍为 0；
+- 9 个固定研究目标、四策略同预算的闭环评估中，uniform/heuristic/neural/hybrid
+  分别认证 0/9、4/9、0/9、3/9；全部 7 个成功证书通过官方 Metamath；
+- 50 条可验证 replay 的候选头更新没有提高 solve rate，但将纯神经搜索耗时从
+  147.4 秒降至 63.6 秒（2.32 倍加速）。
 
-这些结果证明百万语料、100M 模型、长上下文和较深证明对象的工程管线可以
-稳定运行，但**尚不能证明模型已经具备端到端解题能力**。当前完整参考动作
-准确率仍为 0；更重要的是，动作复现本身只是模仿指标，同一状态可能存在多条
-合法证明路径。下一阶段的主指标将改为：在固定搜索预算内能否找到完整证明、
-消解全部开放前提，并输出由独立验证器接受的证书。
+这些结果证明百万语料、100M 模型、长上下文、候选头、MCTS 回放和双验证工程
+闭环可以稳定运行，但**尚不能证明学习策略改善了解题能力**。当前小样本中神经
+策略没有解出目标，P1/P2 的 solve-rate 验收未通过；下一步需要扩大 replay，并在
+37 个泄漏合格目标、三个 seed 上完成正式报告。
 
 ## 安装
 
@@ -130,10 +136,50 @@ python -m neural_prover train-scale \
 - [系统架构](docs/architecture.md)
 - [保守数论定义](docs/number-theory.md)
 - [首次百万级训练与深度实验](docs/first-large-scale-run.md)
+- [首次 RTX 5090 规模训练与闭环实验](docs/first-rtx5090-closed-loop-run.md)
+- [中间引理与连续潜在思维](docs/lemma-and-latent-reasoning.md)
 - [当前进展与研究路线](docs/progress-and-roadmap.md)
 - [历史 Scale 基线](docs/scale-baseline.md)
 
 ## 下一阶段：闭环证明
+
+P0 可信评估、P1 有限候选策略头和 P2 AlphaZero 回放的工程路径已经实现；正式
+研究验收仍需固定 benchmark 的三种子实验。构建公开 benchmark 时应同时传入
+训练语料，参考规则只写到私有 sidecar：
+
+```bash
+python -m neural_prover build-benchmark \
+  formal/peano-number-theory.mm outputs/benchmark-v2.json \
+  --training-corpus outputs/corpus \
+  --reference-output outputs/benchmark-reference.private.json
+
+python -m neural_prover evaluate-mcts \
+  outputs/model/final.pt outputs/corpus outputs/benchmark-v2.json \
+  formal/peano-number-theory.mm outputs/baselines.json \
+  --policies uniform,heuristic,neural,hybrid --seeds 17,19,23 \
+  --external-verifier /path/to/metamath \
+  --require-external-verification
+```
+
+`METAMATH_EXECUTABLE` 环境变量也可指定外部验证器。若要求外部验证但程序不存在、
+超时或输出不明确，结果不会被计为 certified。
+
+在不覆盖旧文件的前提下，把既有检查点升级为中间引理 + 连续潜在思维版本：
+
+```bash
+python -m neural_prover init-latent \
+  outputs/model/final.pt outputs/corpus/tokenizer.json \
+  outputs/model-latent/initial.pt outputs/model-latent/tokenizer.json
+
+python -m neural_prover prove-decomposed \
+  outputs/model-latent/initial.pt outputs/model-latent/tokenizer.json \
+  outputs/benchmark-v2.json CASE_ID formal/peano-number-theory.mm \
+  --simulations 100 --max-depth 20 --branching 24
+```
+
+升级会保留全部旧 token ID 及对应权重，只追加引理动作 token 和新模块。新增权重
+仍需用认证 replay 训练；该工程原型本身不构成解题率提升的实验结论。设计与验收
+边界见[中间引理与连续潜在思维](docs/lemma-and-latent-reasoning.md)。
 
 计划中的真实证明流程是：
 
@@ -173,8 +219,9 @@ Beam/MCTS 探索、执行与回溯
 2. 证明 DAG 能编译为 Metamath 证明；
 3. 项目内验证器能够从原始形式库按声明顺序和活动作用域重放该证明。
 
-当前验证器只支持未压缩证明，尚不能替代经过长期审计的通用 Metamath
-验证器。发布或引用重要结论前，应再用 `metamath-exe` 等独立实现验证。
+当前项目内验证器只支持未压缩证明，尚不能替代经过长期审计的通用 Metamath
+验证器。CLI 可调用 `metamath-exe` 做独立验证；发布或引用重要结论时应使用
+`--require-external-verification` 将其设为强制认证门槛。
 
 ## 项目沿革
 

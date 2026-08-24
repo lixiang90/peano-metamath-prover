@@ -12,7 +12,13 @@ from metamath_generator.parser import parse
 
 from .certificate import compile_certificate, verify_certificate
 from .data import load_examples
-from .environment import BackwardEnvironment, ProofState, Tactic
+from .environment import (
+    LEMMA_BINDING,
+    PROPOSE_LEMMA_RULE,
+    BackwardEnvironment,
+    ProofState,
+    Tactic,
+)
 from .hybrid import HybridActionGenerator
 from .mcts import MCTSExperience, MCTSResult
 from .mcts import MCTSConfig, ProofMCTS
@@ -27,6 +33,8 @@ class ReplayExample:
     action_ids: tuple[tuple[int, ...], ...]
     policy_target: tuple[float, ...]
     value_target: float
+    policy_weight: float = 1.0
+    value_weight: float = 1.0
 
     def to_record(self) -> dict:
         return {
@@ -34,15 +42,22 @@ class ReplayExample:
             "action_ids": [list(ids) for ids in self.action_ids],
             "policy_target": list(self.policy_target),
             "value_target": self.value_target,
+            "policy_weight": self.policy_weight,
+            "value_weight": self.value_weight,
         }
 
     @classmethod
     def from_record(cls, record: dict) -> "ReplayExample":
+        value_target = float(record["value_target"])
         return cls(
             tuple(record["state_ids"]),
             tuple(tuple(ids) for ids in record["action_ids"]),
             tuple(record["policy_target"]),
-            float(record["value_target"]),
+            value_target,
+            float(record.get(
+                "policy_weight", 1.0 if value_target > 0 else 0.0
+            )),
+            float(record.get("value_weight", 1.0)),
         )
 
 
@@ -50,6 +65,7 @@ class ReplayBuffer:
     def __init__(self, capacity: int = 50_000) -> None:
         self.capacity = capacity
         self.examples: list[ReplayExample] = []
+        self._by_state: dict[tuple[int, ...], int] = {}
 
     def __len__(self) -> int:
         return len(self.examples)
@@ -71,6 +87,11 @@ class ReplayBuffer:
             ]
         theorem = state.as_theorem()
         canonical = tokenizer.canonical_variables(theorem)
+        if tactic.rule == PROPOSE_LEMMA_RULE:
+            lemma = tactic.substitution_dict().get(LEMMA_BINDING)
+            if lemma is None:
+                raise ValueError("lemma tactic has no lemma payload")
+            return tokenizer.lemma_tactic_tokens(lemma, canonical)
         assertion = environment.assertions[tactic.rule]
         order = [
             floating.expr.args[0].op
@@ -127,18 +148,35 @@ class ReplayBuffer:
                 action_ids.append(ids)
                 probabilities.append(probability)
             total = sum(probabilities)
-            if not action_ids or total <= 0:
+            policy_weight = float(experience.policy_target_valid)
+            value_weight = float(experience.value_target_valid)
+            if not action_ids and value_weight <= 0:
                 continue
+            normalized = (
+                tuple(value / total for value in probabilities)
+                if total > 0 else ()
+            )
             replay = ReplayExample(
                 state_ids,
                 tuple(action_ids),
-                tuple(value / total for value in probabilities),
+                normalized,
                 experience.value_target,
+                policy_weight if total > 0 else 0.0,
+                value_weight,
             )
-            self.examples.append(replay)
-            added += 1
+            existing = self._by_state.get(state_ids)
+            if existing is None:
+                self._by_state[state_ids] = len(self.examples)
+                self.examples.append(replay)
+                added += 1
+            else:
+                self.examples[existing] = replay
         if len(self.examples) > self.capacity:
             del self.examples[:-self.capacity]
+            self._by_state = {
+                example.state_ids: index
+                for index, example in enumerate(self.examples)
+            }
         return added
 
     def save(self, path: str | Path) -> None:
@@ -155,13 +193,25 @@ class ReplayBuffer:
         capacity: int = 50_000,
     ) -> "ReplayBuffer":
         buffer = cls(capacity)
-        buffer.examples = [
+        records = [
             ReplayExample.from_record(json.loads(line))
             for line in Path(path).read_text(
                 encoding="utf-8"
             ).splitlines()
             if line.strip()
-        ][-capacity:]
+        ]
+        for example in records:
+            existing = buffer._by_state.get(example.state_ids)
+            if existing is None:
+                buffer._by_state[example.state_ids] = len(buffer.examples)
+                buffer.examples.append(example)
+            else:
+                buffer.examples[existing] = example
+        buffer.examples = buffer.examples[-capacity:]
+        buffer._by_state = {
+            example.state_ids: index
+            for index, example in enumerate(buffer.examples)
+        }
         return buffer
 
 
@@ -286,6 +336,7 @@ def collect_replay_from_corpus(
         attempted += 1
         certified = False
         certificate_error: str | None = None
+        outcome = result.outcome
         if result.search.solved:
             try:
                 certificate = compile_certificate(
@@ -296,11 +347,13 @@ def collect_replay_from_corpus(
                 )
                 verify_certificate(certificate, database)
                 certified = True
+                outcome = "certified_solution"
                 solved += 1
             except Exception as exc:
                 # An unverified success must never become a positive reward.
                 rejected_certificates += 1
                 certificate_error = str(exc)
+                outcome = "rejected_certificate"
         if certified or not result.search.solved:
             added += replay.add_mcts(
                 result,
@@ -322,10 +375,20 @@ def collect_replay_from_corpus(
             "source_rule": example.rule,
             "certified": certified,
             "certificate_error": certificate_error,
+            "outcome": outcome,
             "simulations": result.search.simulations,
             "nodes": result.search.nodes,
             "experiences": len(result.experiences),
         })
+        print(
+            "replay-collect "
+            f"{attempted}/{len(candidates)} "
+            f"example={example.example_id} "
+            f"difficulty={example.difficulty} "
+            f"certified={int(certified)} "
+            f"experiences={len(result.experiences)}",
+            flush=True,
+        )
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     replay.save(output)
@@ -341,6 +404,19 @@ def collect_replay_from_corpus(
         "certified": solved,
         "rejected_certificates": rejected_certificates,
         "replay_examples": len(replay),
+        "replay_targets": {
+            "policy_known": sum(
+                example.policy_weight > 0 for example in replay.examples
+            ),
+            "value_known": sum(
+                example.value_weight > 0 for example in replay.examples
+            ),
+            "censored": sum(
+                example.policy_weight <= 0
+                and example.value_weight <= 0
+                for example in replay.examples
+            ),
+        },
         "added": added,
         "by_difficulty": by_difficulty,
         "episodes": episodes,
@@ -392,14 +468,21 @@ def reinforce_model(
             if len(ids) <= model.config.max_action_tokens
         ]
         total = sum(probability for _, probability in pairs)
-        if not pairs or total <= 0:
+        if (
+            (not pairs or total <= 0)
+            and example.value_weight <= 0
+        ):
             skipped += 1
             continue
         compatible.append(ReplayExample(
             example.state_ids,
             tuple(ids for ids, _ in pairs),
-            tuple(probability / total for _, probability in pairs),
+            tuple(
+                probability / total for _, probability in pairs
+            ) if total > 0 else (),
             example.value_target,
+            example.policy_weight if total > 0 else 0.0,
+            example.value_weight,
         ))
     if not compatible:
         raise ValueError("replay has no examples compatible with model limits")
@@ -423,32 +506,30 @@ def reinforce_model(
                 device=device,
             )
             memory, memory_padding, value = model.encode(state)
-            if example.value_target > 0:
-                action_log_probabilities: list[torch.Tensor] = []
-                for ids in example.action_ids:
-                    action = torch.tensor(
-                        [ids],
-                        dtype=torch.long,
-                        device=device,
+            if example.policy_weight > 0 and example.action_ids:
+                width = max(len(ids) for ids in example.action_ids)
+                actions = torch.full(
+                    (len(example.action_ids), width),
+                    model.config.pad_id,
+                    dtype=torch.long,
+                    device=device,
+                )
+                for row, ids in enumerate(example.action_ids):
+                    actions[row, :len(ids)] = torch.tensor(
+                        ids, dtype=torch.long, device=device
                     )
-                    logits = model.decode(
-                        action[:, :-1],
-                        memory,
-                        memory_padding,
-                    )
-                    target = action[:, 1:]
-                    log_probs = F.log_softmax(logits, dim=-1)
-                    selected = log_probs.gather(
-                        -1, target.unsqueeze(-1)
-                    ).squeeze(-1)
-                    action_log_probabilities.append(selected.mean())
-                action_scores = torch.stack(action_log_probabilities)
+                action_scores, _ = model.score_candidates_from_memory(
+                    actions, memory, memory_padding, value
+                )
                 target_policy = torch.tensor(
                     example.policy_target,
                     dtype=torch.float32,
                     device=device,
                 )
-                policy_loss = -(target_policy * action_scores).sum()
+                policy_loss = -(
+                    target_policy
+                    * F.log_softmax(action_scores, dim=0)
+                ).sum() * example.policy_weight
             else:
                 # A failed single-player search has a useful value target but
                 # no trustworthy policy target: its visit distribution merely
@@ -459,7 +540,10 @@ def reinforce_model(
                 dtype=torch.float32,
                 device=device,
             )
-            value_loss = F.mse_loss(value, value_target)
+            value_loss = (
+                F.mse_loss(value, value_target)
+                * example.value_weight
+            )
             loss = (
                 policy_loss + cfg.value_loss_weight * value_loss
             ) / cfg.gradient_accumulation
@@ -481,6 +565,12 @@ def reinforce_model(
             "policy_loss": policy_total / len(examples),
             "value_loss": value_total / len(examples),
         })
+    model.candidate_head_trained = (
+        model.candidate_head_trained or any(
+            example.policy_weight > 0 and example.action_ids
+            for example in compatible
+        )
+    )
     model.save_checkpoint(
         output_checkpoint,
         optimizer_state=optimizer.state_dict(),
