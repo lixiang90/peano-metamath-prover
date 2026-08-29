@@ -1,4 +1,54 @@
-# Peano Metamath Prover
+# Peano Metamath Prover — HTPS 增强版
+
+这是 `peano-metamath-prover` 的独立并行版本，在保留增强 PA 形式内核、认证
+证书、中间引理动作和隐式连续思维链的基础上，引入：
+
+- 认证前向证明 DAG 数据生成，并按递归证明骨架隔离数据集；
+- 真正的 AND/OR 超图搜索、节点共享、PUCT 和软 critic 回传；
+- 中间引理的受保护顺序超边：先证明 `Γ ⊢ L`，再开放 `Γ,L ⊢ G`；
+- 只从最小已认证证明提取策略目标，预算耗尽状态仍按删失处理；
+- latent policy/value/lemma/halt 的监督训练与同步在线闭环；
+- 仅以最终 Metamath 证书重放成功作为 solve 指标。
+
+原项目源码被保留在本目录的 `metamath_generator` 与 `neural_prover` 包中；新增
+实现集中在 `src/htps_prover/`，不会依赖或改写相邻原仓库。
+
+## HTPS 快速开始
+
+```bash
+python -m pip install -e ".[neural,dev]"
+
+# 1. 生成认证 forward DAG、policy 数据和 lemma 数据
+peano-htps generate formal/peano.mm outputs/htps-data \
+  --steps 5000 --seeds 7,11,19,23 --max-proof-depth 12 \
+  --base-tokenizer BASE_TOKENIZER.json
+
+# 2a. 将旧 checkpoint 无损升级为 latent+lemma checkpoint
+peano-htps init-latent BASE.pt BASE_TOKENIZER.json \
+  outputs/latent-initial.pt outputs/htps-data/tokenizer.json
+
+# 2b. 或从头新建约 104M 参数的 latent+lemma 模型
+peano-htps init-model outputs/htps-data/tokenizer.json \
+  outputs/latent-initial.pt
+
+# 3. 用 forward DAG 监督训练
+peano-htps train-supervised outputs/latent-initial.pt \
+  outputs/htps-data/tokenizer.json outputs/htps-data/policy_train.jsonl \
+  outputs/latent-sft.pt --lemmas outputs/htps-data/lemma_train.jsonl
+
+# 4. 同步 HTPS 搜索/训练闭环
+peano-htps closed-loop outputs/latent-sft.pt \
+  outputs/htps-data/tokenizer.json outputs/htps-data/policy_train.jsonl \
+  formal/peano.mm outputs/closed-loop --iterations 2 --examples 32
+
+# 5. 在隔离 split 上进行证书口径评估
+peano-htps evaluate outputs/closed-loop/checkpoint-002.pt \
+  outputs/htps-data/tokenizer.json outputs/htps-data/policy_test.jsonl \
+  formal/peano.mm outputs/evaluation.json --limit 32
+```
+
+算法、数据格式、可信边界和已知限制见
+[`docs/htps-design.md`](docs/htps-design.md)。
 
 一个面向 `peano.mm` 的严格类型定理生成器与神经符号证明器。目前版本为
 Beta：神经网络和搜索器只能提出候选动作，成功证明必须能够编译并由项目内
@@ -27,6 +77,7 @@ Beta：神经网络和搜索器只能提出候选动作，成功证明必须能�
 formal/                  peano.mm 与保守数论定义
 src/metamath_generator/  解析、合一、组合、质量控制与数据导出
 src/neural_prover/       Transformer、MCTS、Scale 数据和训练
+src/htps_prover/         forward DAG、HTPS、latent 训练与在线闭环
 tests/                   内核、数论定义和神经符号回归测试
 docs/                    架构、数论定义与 Scale 实验说明
 ```
