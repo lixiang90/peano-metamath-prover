@@ -36,6 +36,14 @@ class GenerationConfig(_EngineConfig):
     # Zero preserves the quality-first sampler. Positive values increasingly
     # reuse deeper certified parents, enabling explicit depth-scaling runs.
     depth_parent_bias: float = 0.0
+    # Explicit definitions are closed iff axioms, not inference rules.  In
+    # guided runs, mechanically derive both implication directions through
+    # bi1/bi2 and modus ponens so later search can unfold and fold them.
+    bootstrap_definitions: bool = False
+    focus_predicates: tuple[str, ...] = ()
+    definition_coverage_weight: float = 0.0
+    compatible_candidate_filter: bool = True
+    max_joint_candidate_attempts: int = 8
 
 
 @dataclass(slots=True)
@@ -47,6 +55,12 @@ class GenerationSummary:
     categories: dict[str, int]
     rejected: dict[str, int]
     rule_usage: dict[str, int]
+    definition_predicates_total: int
+    definition_predicates_seen: int
+    definition_coverage: float
+    definition_usage: dict[str, int]
+    definition_bridges: int
+    search_stored: int
 
 
 class TheoremGenerator(_CompositionEngine):
@@ -66,6 +80,10 @@ class TheoremGenerator(_CompositionEngine):
         store: TheoremDatabase | None = None,
     ) -> None:
         super().__init__(parsed, config or GenerationConfig(), store)
+        if self.config.definition_coverage_weight < 0:
+            raise ValueError("definition_coverage_weight must be non-negative")
+        if self.config.max_joint_candidate_attempts <= 0:
+            raise ValueError("max_joint_candidate_attempts must be positive")
         self.analyzer = QualityAnalyzer(parsed, self.config.quality)
         self.assessments: dict[int, QualityAssessment] = {}
         self.profiles: dict[int, SemanticProfile] = {}
@@ -78,6 +96,22 @@ class TheoremGenerator(_CompositionEngine):
         self._candidate_use: Counter[int] = Counter()
         self._proof_states_by_conclusion: Counter[tuple] = Counter()
         self._new_ids: list[int] = []
+        self._definition_sources = self._find_definition_sources(parsed)
+        requested_focus = tuple(dict.fromkeys(self.config.focus_predicates))
+        unknown_focus = set(requested_focus) - set(self._definition_sources)
+        if unknown_focus:
+            raise ValueError(
+                "focus predicates are not explicit definitions: "
+                f"{sorted(unknown_focus)}"
+            )
+        self.focus_predicates = (
+            requested_focus
+            if requested_focus
+            else tuple(sorted(self._definition_sources))
+        )
+        self._focus_set = frozenset(self.focus_predicates)
+        self._definition_usage: Counter[str] = Counter()
+        self._definitions_bootstrapped = False
         self.stats: Counter[str] = Counter()
         self.rejected: Counter[str] = Counter()
         self.rule_usage: Counter[str] = Counter()
@@ -97,6 +131,23 @@ class TheoremGenerator(_CompositionEngine):
             self.active_ids.add(theorem_id)
             self._semantic_to_id.setdefault(profile.full_key, theorem_id)
             self._by_conclusion[profile.conclusion_key].add(theorem_id)
+
+    @staticmethod
+    def _find_definition_sources(parsed: Database) -> dict[str, Theorem]:
+        definitions: dict[str, Theorem] = {}
+        for theorem in parsed.logical_assertions.values():
+            if not theorem.name.startswith("df-") or theorem.hypotheses:
+                continue
+            conclusion = theorem.conclusion
+            if conclusion.op != "|-" or len(conclusion.args) != 1:
+                continue
+            body = conclusion.args[0]
+            if body.op != "iff" or len(body.args) != 2 or not body.args[0].args:
+                continue
+            predicate = body.args[0].op
+            if theorem.name == f"df-{predicate}":
+                definitions[predicate] = theorem
+        return definitions
 
     @staticmethod
     def _subsumes(left: SemanticProfile, right: SemanticProfile) -> bool:
@@ -198,6 +249,11 @@ class TheoremGenerator(_CompositionEngine):
         self._new_ids.append(theorem_id)
         self.stats["stored"] += 1
         self.rule_usage[stored.proof.rule if stored.proof else stored.name] += 1
+        used_definitions = {
+            node.op for node in stored.conclusion.walk()
+            if node.op in self._focus_set
+        }
+        self._definition_usage.update(used_definitions)
 
         for existing_id in comparable:
             if existing_id in self.source_ids:
@@ -242,11 +298,51 @@ class TheoremGenerator(_CompositionEngine):
             return False
         return self._admit(theorem)
 
+    @staticmethod
+    def _nodes_may_unify(
+        left: Node,
+        right: Node,
+        left_types: dict[str, str],
+        right_types: dict[str, str],
+    ) -> bool:
+        left_type = left_types.get(left.op) if not left.args else None
+        right_type = right_types.get(right.op) if not right.args else None
+        if left_type is not None or right_type is not None:
+            return (
+                left_type == right_type
+                if left_type is not None and right_type is not None
+                else True
+            )
+        return (
+            left.op == right.op
+            and len(left.args) == len(right.args)
+            and all(
+                TheoremGenerator._nodes_may_unify(
+                    left_arg,
+                    right_arg,
+                    left_types,
+                    right_types,
+                )
+                for left_arg, right_arg in zip(left.args, right.args)
+            )
+        )
+
     def _active_candidates(self, conclusion: Node | None = None) -> list[Theorem]:
         result: list[Theorem] = []
         for theorem_id in self.active_ids:
             theorem = self.store[theorem_id]
             if conclusion is not None and theorem.conclusion.op != conclusion.op:
+                continue
+            if (
+                conclusion is not None
+                and self.config.compatible_candidate_filter
+                and not self._nodes_may_unify(
+                    conclusion,
+                    theorem.conclusion,
+                    self.parsed.variable_types,
+                    theorem.variable_types,
+                )
+            ):
                 continue
             result.append(theorem)
         return result
@@ -279,30 +375,93 @@ class TheoremGenerator(_CompositionEngine):
         depth_bonus = (1.0 + theorem.proof_depth) ** (
             self.config.depth_parent_bias
         )
+        definitions = {
+            node.op for node in theorem.conclusion.walk()
+            if node.op in self._focus_set
+        }
+        if definitions and self.config.definition_coverage_weight > 0:
+            coverage_need = sum(
+                1.0 / math.sqrt(1.0 + self._definition_usage[name])
+                for name in definitions
+            ) / len(definitions)
+            coverage_bonus = (
+                1.0 + self.config.definition_coverage_weight * coverage_need
+            )
+        else:
+            coverage_bonus = 1.0
         return (
             (closed_bonus + quality_bonus)
             * depth_bonus
+            * coverage_bonus
             / reuse_penalty
         )
 
-    def _choose_candidate(self, premise: Node) -> Theorem | None:
-        candidates = self._active_candidates(premise)
+    def _choose_weighted_candidate(
+        self,
+        candidates: list[Theorem],
+        *,
+        record_use: bool = True,
+    ) -> Theorem | None:
         if not candidates:
             return None
+        chosen = self.random.choices(
+            candidates,
+            weights=[self._candidate_weight(item) for item in candidates],
+            k=1,
+        )[0]
+        if record_use and chosen.id is not None:
+            self._candidate_use[chosen.id] += 1
+        return chosen
+
+    def _choose_candidate(self, premise: Node) -> Theorem | None:
+        candidates = self._active_candidates(premise)
         closed = [theorem for theorem in candidates if not theorem.hypotheses]
         if (
             closed
             and self.random.random() < self.config.closed_parent_probability
         ):
             candidates = closed
-        chosen = self.random.choices(
-            candidates,
-            weights=[self._candidate_weight(item) for item in candidates],
-            k=1,
-        )[0]
-        if chosen.id is not None:
-            self._candidate_use[chosen.id] += 1
-        return chosen
+        return self._choose_weighted_candidate(candidates)
+
+    def _joint_ax_mp_matches(
+        self,
+        rule: Theorem,
+    ) -> list[Theorem | None] | None:
+        """Choose a compatible minor/major pair instead of sampling blindly."""
+
+        majors = self._active_candidates(rule.hypotheses[1].expr)
+        tried = 0
+        while majors and tried < self.config.max_joint_candidate_attempts:
+            major = self._choose_weighted_candidate(majors, record_use=False)
+            if major is None:
+                return None
+            majors.remove(major)
+            tried += 1
+            major_body = major.conclusion.args[0]
+            if major_body.op != "implies" or len(major_body.args) != 2:
+                continue
+            antecedent = major_body.args[0]
+            minors = [
+                theorem
+                for theorem in self._active_candidates(rule.hypotheses[0].expr)
+                if theorem.conclusion.args
+                and self._nodes_may_unify(
+                    antecedent,
+                    theorem.conclusion.args[0],
+                    major.variable_types,
+                    theorem.variable_types,
+                )
+            ]
+            minor = self._choose_weighted_candidate(minors, record_use=False)
+            if minor is None:
+                continue
+            for parent in (minor, major):
+                if parent.id is not None:
+                    self._candidate_use[parent.id] += 1
+            self.stats["joint_match_plan"] += 1
+            return [minor, major]
+        self.rejected["no_joint_candidate"] += 1
+        return None
 
     def _match_indices(self, rule: Theorem) -> list[int]:
         count = len(rule.hypotheses)
@@ -318,6 +477,45 @@ class TheoremGenerator(_CompositionEngine):
         partial_count = self.random.randint(1, count - 1)
         return self.random.sample(range(count), partial_count)
 
+    def bootstrap_definition_directions(self) -> list[Theorem]:
+        """Derive certified unfold/fold implications for focused definitions."""
+
+        start_index = len(self._new_ids)
+        if self._definitions_bootstrapped:
+            return []
+        self._definitions_bootstrapped = True
+        ax_mp = self.parsed.logical_assertions.get("ax-mp")
+        directions = (
+            ("unfold", self.parsed.logical_assertions.get("bi1")),
+            ("fold", self.parsed.logical_assertions.get("bi2")),
+        )
+        if ax_mp is None or any(rule is None for _, rule in directions):
+            self.rejected["definition_bootstrap_unavailable"] += 1
+            return []
+
+        for predicate in self.focus_predicates:
+            definition = self._definition_sources[predicate]
+            for direction, bridge in directions:
+                self.stats["definition_bootstrap_attempts"] += 1
+                try:
+                    theorem = compose(
+                        ax_mp,
+                        [definition, bridge],
+                        name=f"gen{len(self.store)}_df_{predicate}_{direction}",
+                        database=self.parsed,
+                    )
+                except CompositionError:
+                    self.rejected["definition_bootstrap_composition_failed"] += 1
+                    continue
+                if not self._valid(theorem):
+                    self.rejected["definition_bootstrap_structural_limit"] += 1
+                    continue
+                if self._admit(theorem):
+                    self.stats["definition_bridges"] += 1
+                else:
+                    self.rejected["definition_bootstrap_not_admitted"] += 1
+        return [self.store[item] for item in self._new_ids[start_index:]]
+
     def random_walk(self, steps: int) -> list[Theorem]:
         start_index = len(self._new_ids)
         if not self.rules:
@@ -330,10 +528,15 @@ class TheoremGenerator(_CompositionEngine):
                 self.stats["full_discharge_plans"] += 1
             else:
                 self.stats["partial_discharge_plans"] += 1
-            for index in indices:
-                matches[index] = self._choose_candidate(
-                    rule.hypotheses[index].expr
-                )
+            if rule.name == "ax-mp" and set(indices) == {0, 1}:
+                planned = self._joint_ax_mp_matches(rule)
+                if planned is not None:
+                    matches = planned
+            else:
+                for index in indices:
+                    matches[index] = self._choose_candidate(
+                        rule.hypotheses[index].expr
+                    )
             if any(parent is not None for parent in matches):
                 self._try(rule, matches)
             else:
@@ -383,11 +586,16 @@ class TheoremGenerator(_CompositionEngine):
         mode: Literal["random", "forward"] = "random",
         steps: int = 100,
     ) -> list[Theorem]:
+        start_index = len(self._new_ids)
+        if self.config.bootstrap_definitions:
+            self.bootstrap_definition_directions()
         if mode == "forward":
-            return self.forward_saturation(steps)
-        if mode == "random":
-            return self.random_walk(steps)
-        raise ValueError(f"unsupported generation mode: {mode}")
+            self.forward_saturation(steps)
+        elif mode == "random":
+            self.random_walk(steps)
+        else:
+            raise ValueError(f"unsupported generation mode: {mode}")
+        return [self.store[item] for item in self._new_ids[start_index:]]
 
     def categorized(
         self,
@@ -446,4 +654,25 @@ class TheoremGenerator(_CompositionEngine):
             categories=categories,
             rejected=dict(self.rejected),
             rule_usage=dict(self.rule_usage),
+            definition_predicates_total=len(self.focus_predicates),
+            definition_predicates_seen=sum(
+                self._definition_usage[name] > 0
+                for name in self.focus_predicates
+            ),
+            definition_coverage=(
+                sum(
+                    self._definition_usage[name] > 0
+                    for name in self.focus_predicates
+                ) / len(self.focus_predicates)
+                if self.focus_predicates
+                else 1.0
+            ),
+            definition_usage={
+                name: self._definition_usage[name]
+                for name in self.focus_predicates
+            },
+            definition_bridges=self.stats["definition_bridges"],
+            search_stored=(
+                len(self._new_ids) - self.stats["definition_bridges"]
+            ),
         )

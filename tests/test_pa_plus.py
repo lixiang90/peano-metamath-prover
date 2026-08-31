@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from collections import Counter
 from copy import deepcopy
@@ -14,7 +15,10 @@ from metamath_generator.definitions import (
     load_definition_catalog,
     render_definition_catalog,
 )
+from metamath_generator.export import export_metamath
+from metamath_generator.generator import GenerationConfig, TheoremGenerator
 from metamath_generator.parser import MetamathParser, ParseError, parse
+from metamath_generator.verifier import verify
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -155,6 +159,104 @@ class PaPlusDefinitionTests(unittest.TestCase):
         self.assertIn("nthrootexact", root_ops)
         self.assertIn("coprime", root_ops)
         self.assertIn("=", root_ops)
+
+    def test_definition_guidance_builds_bidirectional_certified_bridges(
+        self,
+    ) -> None:
+        focus = ("positive", "multiplicativeorder")
+        generator = TheoremGenerator(
+            self.extension,
+            GenerationConfig(
+                seed=7,
+                bootstrap_definitions=True,
+                focus_predicates=focus,
+                definition_coverage_weight=3.0,
+            ),
+        )
+        generated = generator.generate("random", 0)
+        self.assertEqual(len(generated), 2 * len(focus))
+        for predicate in focus:
+            bodies = [
+                theorem.conclusion.args[0]
+                for theorem in generated
+                if predicate in {
+                    node.op for node in theorem.conclusion.walk()
+                }
+            ]
+            self.assertEqual(len(bodies), 2, predicate)
+            self.assertTrue(all(body.op == "implies" for body in bodies))
+            self.assertEqual(sum(body.args[0].op == predicate for body in bodies), 1)
+            self.assertEqual(sum(body.args[1].op == predicate for body in bodies), 1)
+
+        summary = generator.summary()
+        self.assertEqual(summary.definition_predicates_seen, len(focus))
+        self.assertEqual(summary.definition_coverage, 1.0)
+        self.assertTrue(all(summary.definition_usage[name] == 2 for name in focus))
+
+    def test_definition_bridge_exports_and_replays(self) -> None:
+        generator = TheoremGenerator(
+            self.extension,
+            GenerationConfig(
+                bootstrap_definitions=True,
+                focus_predicates=("positive",),
+            ),
+        )
+        generated = generator.generate("random", 0)
+        with tempfile.TemporaryDirectory() as directory:
+            fragment = Path(directory) / "generated.mm"
+            export_metamath(generated[-1], generator.store, fragment)
+            parser = MetamathParser()
+            expanded = " ".join(parser._tokens_with_includes(EXTENSION, set()))
+            combined = parser.parse_text(
+                expanded + "\n" + fragment.read_text(encoding="utf-8")
+            )
+            replayed = [
+                theorem
+                for theorem in combined.proved_theorems.values()
+                if theorem.name.startswith("gen")
+            ]
+            self.assertEqual(len(replayed), 1)
+            verify(replayed[0], combined)
+
+    def test_guided_random_pa_plus_dag_exports_and_replays(self) -> None:
+        focus = ("positive", "multiplicativeorder", "binomial")
+        generator = TheoremGenerator(
+            self.extension,
+            GenerationConfig(
+                seed=11,
+                max_proof_depth=6,
+                bootstrap_definitions=True,
+                focus_predicates=focus,
+                definition_coverage_weight=3.0,
+            ),
+        )
+        generator.generate("random", 250)
+        candidates = [
+            theorem
+            for theorem in generator.store.generated()
+            if theorem.proof_depth >= 2
+            and {
+                node.op for node in theorem.conclusion.walk()
+            } & set(focus)
+        ]
+        self.assertTrue(candidates)
+
+        with tempfile.TemporaryDirectory() as directory:
+            fragment = Path(directory) / "generated.mm"
+            export_metamath(candidates[-1], generator.store, fragment)
+            parser = MetamathParser()
+            expanded = " ".join(parser._tokens_with_includes(EXTENSION, set()))
+            combined = parser.parse_text(
+                expanded + "\n" + fragment.read_text(encoding="utf-8")
+            )
+            replayed = [
+                theorem
+                for theorem in combined.proved_theorems.values()
+                if theorem.name.startswith("gen")
+            ]
+            self.assertGreaterEqual(len(replayed), 2)
+            for theorem in replayed:
+                verify(theorem, combined)
 
     def test_catalog_covers_all_first_wave_domains(self) -> None:
         definition_areas = Counter(item.area for item in self.catalog.definitions)

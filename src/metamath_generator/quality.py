@@ -45,6 +45,7 @@ class QualityConfig:
     nonvacuous_quantifier_reward: float = 4.0
     mixed_schematic_penalty: float = 18.0
     novelty_reward: float = 12.0
+    defined_predicate_reward: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +71,7 @@ class QualityAssessment:
     schematic_wff_variables: tuple[str, ...] = ()
     bare_conclusion: bool = False
     arithmetic_operators: tuple[str, ...] = ()
+    defined_predicates: tuple[str, ...] = ()
     source_equivalent: bool = False
     dominated: bool = False
     semantic_key: tuple = ()
@@ -252,6 +254,16 @@ class QualityAnalyzer:
             semantic_profile(theorem).conclusion_key
             for theorem in parsed.logical_assertions.values()
         }
+        self.definition_predicates = frozenset(
+            theorem.conclusion.args[0].args[0].op
+            for theorem in parsed.logical_assertions.values()
+            if theorem.name.startswith("df-")
+            and theorem.conclusion.op == "|-"
+            and len(theorem.conclusion.args) == 1
+            and theorem.conclusion.args[0].op == "iff"
+            and len(theorem.conclusion.args[0].args) == 2
+            and theorem.conclusion.args[0].args[0].args
+        )
 
     def assess(self, theorem: Theorem) -> tuple[QualityAssessment, SemanticProfile]:
         profile = semantic_profile(theorem)
@@ -264,6 +276,11 @@ class QualityAnalyzer:
             node.op
             for node in profile.normalized_conclusion.walk()
             if node.op in ARITHMETIC_OPERATORS
+        }))
+        defined_predicates = tuple(sorted({
+            node.op
+            for node in profile.normalized_conclusion.walk()
+            if node.op in self.definition_predicates
         }))
         nonvacuous_quantifiers = sum(
             _is_quantifier(node, theorem.variable_types)
@@ -307,6 +324,14 @@ class QualityAnalyzer:
                 cfg.arithmetic_operator_reward * len(arithmetic),
             )
             reasons.append("arithmetic structure: " + ", ".join(arithmetic))
+        if defined_predicates:
+            score += min(
+                20.0,
+                cfg.defined_predicate_reward * len(defined_predicates),
+            )
+            reasons.append(
+                "defined predicates: " + ", ".join(defined_predicates)
+            )
         if nonvacuous_quantifiers:
             score += min(
                 12.0,
@@ -380,6 +405,7 @@ class QualityAnalyzer:
             schematic_wff_variables=schematic_wff_variables,
             bare_conclusion=bare,
             arithmetic_operators=arithmetic,
+            defined_predicates=defined_predicates,
             source_equivalent=source_equivalent,
             semantic_key=profile.full_key,
             normalized_conclusion=profile.normalized_conclusion.to_prefix(),

@@ -137,6 +137,19 @@ python -m metamath_generator formal/peano.mm \
   --output-dir outputs/generated
 ```
 
+对扩展 PA+ 目录启用定义展开/折叠桥、结构兼容采样和覆盖均衡：
+
+```bash
+python -m metamath_generator formal/peano-pa-plus.mm \
+  --mode random --steps 5000 --seed 7 \
+  --definition-catalog formal/pa-plus-definitions.json \
+  --bootstrap-definitions --definition-coverage-weight 3 \
+  --output-dir outputs/pa-plus-guided
+```
+
+算法、基线和严格边界见
+[PA+ 随机定理生成](docs/pa-plus-random-generation.md)。
+
 输出包括：
 
 - `closed_theorems.jsonl`
