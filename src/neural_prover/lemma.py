@@ -150,6 +150,7 @@ class LemmaBackwardEnvironment(BackwardEnvironment):
                     normalized,
                     raw.generated_goals,
                     raw.resolved_substitution,
+                    raw.assertion,
                 )
             )
         self._lemma_transition_cache[key] = transition

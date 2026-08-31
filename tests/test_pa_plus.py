@@ -19,6 +19,11 @@ from metamath_generator.export import export_metamath
 from metamath_generator.generator import GenerationConfig, TheoremGenerator
 from metamath_generator.parser import MetamathParser, ParseError, parse
 from metamath_generator.verifier import verify
+from neural_prover.data import (
+    CorpusBuildConfig,
+    build_corpus,
+    load_examples,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -287,6 +292,53 @@ class PaPlusDefinitionTests(unittest.TestCase):
         # per direction even though the requested cap is four.
         self.assertEqual(len(bounded), 6)
         self.assertEqual(len({theorem.conclusion for theorem in bounded}), 6)
+
+    def test_pa_plus_neural_corpus_keeps_bootstrap_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "corpus"
+            manifest = build_corpus(
+                EXTENSION,
+                output,
+                CorpusBuildConfig(
+                    seeds=(7,),
+                    steps_per_seed=0,
+                    definition_catalog=str(CATALOG),
+                    bootstrap_definitions=True,
+                    definition_coverage_weight=3.0,
+                    bounded_nat_max=2,
+                    ground_instances_per_predicate=1,
+                    target_guidance_weight=4.0,
+                    max_definition_only_search_per_predicate=1,
+                    max_state_tokens=1024,
+                    max_action_tokens=512,
+                    include_source_actions=False,
+                ),
+            )
+            examples = sum((
+                load_examples(output / f"{split}.jsonl")
+                for split in ("train", "validation", "test")
+            ), [])
+        self.assertEqual(manifest["runs"][0]["definition_bridges"], 136)
+        self.assertEqual(
+            manifest["runs"][0]["bounded_ground_instances"], 136
+        )
+        kinds = {example.generation_kind for example in examples}
+        self.assertEqual(kinds, {"definition_bridge", "bounded_instance"})
+        bounded = next(
+            example for example in examples
+            if example.generation_kind == "bounded_instance"
+        )
+        self.assertTrue(bounded.rule.startswith("gen_df_"))
+        self.assertIn("<PA_PLUS_CONTEXT>", bounded.state_tokens)
+        self.assertIn("<DEFINITION_BRIDGE>", bounded.action_tokens)
+        self.assertTrue(
+            "<UNFOLD>" in bounded.action_tokens
+            or "<FOLD>" in bounded.action_tokens
+        )
+        self.assertTrue(any(
+            token.startswith("<V:term:")
+            for token in bounded.action_tokens
+        ))
 
     def test_backward_guidance_improves_target_similarity(self) -> None:
         common = dict(

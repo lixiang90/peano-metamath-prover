@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Literal
 
+from metamath_generator.definitions import load_definition_catalog
 from metamath_generator.generator import (
     GenerationConfig,
     TheoremGenerator,
@@ -32,6 +33,14 @@ class CorpusBuildConfig:
     closed_parent_probability: float = 0.78
     max_proof_states_per_conclusion: int = 3
     depth_parent_bias: float = 0.0
+    definition_catalog: str | None = None
+    bootstrap_definitions: bool = False
+    definition_coverage_weight: float = 0.0
+    bounded_nat_max: int = -1
+    ground_instances_per_predicate: int = 0
+    target_guidance_weight: float = 0.0
+    max_definition_only_search_per_predicate: int = -1
+    max_target_hints: int = 3
     validation_fraction: float = 0.1
     test_fraction: float = 0.1
     include_inference_rules: bool = True
@@ -58,6 +67,9 @@ class ProverExample:
     action_tokens: tuple[str, ...]
     state_ids: tuple[int, ...]
     action_ids: tuple[int, ...]
+    generation_kind: str = "search"
+    guidance_target: str | None = None
+    definition_support: tuple[str, ...] = ()
 
     def to_record(self) -> dict:
         record = asdict(self)
@@ -67,6 +79,7 @@ class ProverExample:
             "action_tokens",
             "state_ids",
             "action_ids",
+            "definition_support",
         ):
             record[key] = list(record[key])
         return record
@@ -75,12 +88,16 @@ class ProverExample:
     def from_record(cls, record: dict) -> "ProverExample":
         converted = dict(record)
         converted.setdefault("origin", "synthetic")
+        converted.setdefault("generation_kind", "search")
+        converted.setdefault("guidance_target", None)
+        converted.setdefault("definition_support", ())
         for key in (
             "hypotheses",
             "state_tokens",
             "action_tokens",
             "state_ids",
             "action_ids",
+            "definition_support",
         ):
             converted[key] = tuple(converted[key])
         return cls(**converted)
@@ -143,6 +160,9 @@ def _examples_from_generator(
     tokenizer: MetamathTokenizer,
     config: CorpusBuildConfig,
 ) -> Iterable[ProverExample]:
+    rule_lookup = {
+        theorem.name: theorem for theorem in generator.store
+    }
     categories = ["closed_theorems"]
     if config.include_inference_rules:
         categories.append("inference_rules")
@@ -160,6 +180,7 @@ def _examples_from_generator(
                         theorem,
                         generator.parsed,
                         canonical,
+                        rule_lookup=rule_lookup,
                     )
                 )
             except ValueError:
@@ -195,6 +216,13 @@ def _examples_from_generator(
                 action_tokens=action_tokens,
                 state_ids=tuple(tokenizer.encode(state_tokens)),
                 action_ids=tuple(tokenizer.encode(action_tokens)),
+                generation_kind=generator.generation_context.get(
+                    theorem.id, "search"
+                ),
+                guidance_target=generator.guidance_targets.get(theorem.id),
+                definition_support=tuple(sorted(
+                    generator.definition_support.get(theorem.id, ())
+                )),
             )
 
 
@@ -218,6 +246,7 @@ def _source_examples(
             substitution,
             canonical,
             variable_order=floating_order,
+            rule_variable_types=theorem.variable_types,
         ))
         if (
             len(state_tokens) > config.max_state_tokens
@@ -246,6 +275,7 @@ def _source_examples(
             action_tokens=action_tokens,
             state_ids=tuple(tokenizer.encode(state_tokens)),
             action_ids=tuple(tokenizer.encode(action_tokens)),
+            generation_kind="source",
         )
 
 
@@ -271,7 +301,29 @@ def build_corpus(
     if cfg.validation_fraction + cfg.test_fraction >= 1:
         raise ValueError("validation and test fractions must sum to < 1")
     database = parse(database_path)
-    tokenizer = MetamathTokenizer.from_database(database, cfg.tokenizer)
+    catalog = (
+        load_definition_catalog(cfg.definition_catalog)
+        if cfg.definition_catalog is not None
+        else None
+    )
+    focus_predicates = catalog.definition_names if catalog is not None else ()
+    target_statements = catalog.statement_names if catalog is not None else ()
+    pa_plus_context = (
+        MetamathTokenizer.pa_plus_context_from_database(
+            database,
+            focus_predicates,
+            target_statements,
+            bounded_nat_max=cfg.bounded_nat_max,
+            max_target_hints=cfg.max_target_hints,
+        )
+        if catalog is not None
+        else None
+    )
+    tokenizer = MetamathTokenizer.from_database(
+        database,
+        cfg.tokenizer,
+        pa_plus_context=pa_plus_context,
+    )
     best: dict[str, ProverExample] = {}
     run_summaries: list[dict] = []
     for seed in cfg.seeds:
@@ -290,6 +342,18 @@ def build_corpus(
                 max_proof_states_per_conclusion=
                     cfg.max_proof_states_per_conclusion,
                 depth_parent_bias=cfg.depth_parent_bias,
+                bootstrap_definitions=cfg.bootstrap_definitions,
+                focus_predicates=focus_predicates,
+                definition_coverage_weight=
+                    cfg.definition_coverage_weight,
+                bounded_nat_max=cfg.bounded_nat_max,
+                ground_instances_per_predicate=
+                    cfg.ground_instances_per_predicate,
+                target_statements=target_statements,
+                target_guidance_weight=cfg.target_guidance_weight,
+                max_definition_only_search_per_predicate=(
+                    cfg.max_definition_only_search_per_predicate
+                ),
             ),
         )
         generator.generate("random", cfg.steps_per_seed)
@@ -316,6 +380,15 @@ def build_corpus(
             "proof_depth_histogram": dict(sorted(
                 depth_histogram.items(), key=lambda item: int(item[0])
             )),
+            "definition_bridges": summary.definition_bridges,
+            "bounded_ground_instances": summary.bounded_ground_instances,
+            "search_stored": summary.search_stored,
+            "target_statements_touched":
+                summary.target_statements_touched,
+            "target_mean_best_similarity":
+                summary.target_mean_best_similarity,
+            "definition_only_search_admitted":
+                summary.definition_only_search_admitted,
         })
         for example in _examples_from_generator(
             generator,

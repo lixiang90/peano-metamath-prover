@@ -45,6 +45,18 @@ INSTRUCTION_TOKENS = (
     "<LEMMA>",
     "<END_LEMMA>",
 )
+PA_PLUS_CONTEXT_TOKENS = (
+    "<PA_PLUS_CONTEXT>",
+    "<DEFINITIONS>",
+    "<END_DEFINITIONS>",
+    "<TARGET_HINTS>",
+    "<END_TARGET_HINTS>",
+    "<GROUND_TERMS>",
+    "<END_PA_PLUS_CONTEXT>",
+    "<DEFINITION_BRIDGE>",
+    "<UNFOLD>",
+    "<FOLD>",
+)
 VARIABLE_TOKEN_PATTERN = re.compile(r"^<V:(.+):(\d+)>$")
 
 
@@ -52,6 +64,21 @@ VARIABLE_TOKEN_PATTERN = re.compile(r"^<V:(.+):(\d+)>$")
 class TokenizerConfig:
     max_variables_per_type: int = 32
     strict: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class PAPlusTokenizerContext:
+    """Formal, non-linguistic hints derived from the audited PA+ catalog."""
+
+    definition_predicates: tuple[str, ...] = ()
+    target_statements: tuple[tuple[str, str], ...] = ()
+    variable_symbols: tuple[str, ...] = ()
+    bounded_nat_max: int = -1
+    max_target_hints: int = 3
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.definition_predicates or self.target_statements)
 
 
 @dataclass(slots=True)
@@ -133,8 +160,10 @@ class MetamathTokenizer:
         config: TokenizerConfig | None = None,
         *,
         preserve_token_order: bool = False,
+        pa_plus_context: PAPlusTokenizerContext | None = None,
     ) -> None:
         self.config = config or TokenizerConfig()
+        self.pa_plus_context = pa_plus_context or PAPlusTokenizerContext()
         supplied = list(dict.fromkeys(tokens))
         if preserve_token_order:
             # Serialized vocabularies define checkpoint-facing token IDs.
@@ -160,8 +189,11 @@ class MetamathTokenizer:
         cls,
         database: Database,
         config: TokenizerConfig | None = None,
+        *,
+        pa_plus_context: PAPlusTokenizerContext | None = None,
     ) -> "MetamathTokenizer":
         cfg = config or TokenizerConfig()
+        context = pa_plus_context or PAPlusTokenizerContext()
         formal = set(database.symbols)
         formal.update(database.variables)
         formal.update(database.types)
@@ -178,10 +210,64 @@ class MetamathTokenizer:
         return cls(
             [
                 *INSTRUCTION_TOKENS,
+                *(
+                    PA_PLUS_CONTEXT_TOKENS
+                    if context.enabled else ()
+                ),
                 *sorted(formal),
+                *sorted(
+                    f"gen_df_{predicate}_{direction}"
+                    for predicate in context.definition_predicates
+                    for direction in ("unfold", "fold")
+                ),
                 *sorted(slots),
             ],
             cfg,
+            pa_plus_context=context,
+        )
+
+    @staticmethod
+    def pa_plus_context_from_database(
+        database: Database,
+        definition_predicates: Iterable[str],
+        target_statements: Iterable[str],
+        *,
+        bounded_nat_max: int = -1,
+        max_target_hints: int = 3,
+    ) -> PAPlusTokenizerContext:
+        definitions = tuple(dict.fromkeys(definition_predicates))
+        unknown_definitions = [
+            predicate
+            for predicate in definitions
+            if f"df-{predicate}" not in database.logical_assertions
+        ]
+        if unknown_definitions:
+            raise ValueError(
+                "PA+ context has unknown definitions: "
+                f"{unknown_definitions}"
+            )
+        targets: list[tuple[str, str]] = []
+        for name in dict.fromkeys(target_statements):
+            statement = database.syntax_statements.get(name)
+            if (
+                statement is None
+                or statement.conclusion.op != "statement"
+                or len(statement.conclusion.args) != 1
+            ):
+                raise ValueError(
+                    f"PA+ context target is not a statement: {name}"
+                )
+            targets.append((name, statement.conclusion.args[0].to_prefix()))
+        if bounded_nat_max < -1:
+            raise ValueError("bounded_nat_max must be at least -1")
+        if max_target_hints < 0:
+            raise ValueError("max_target_hints must be non-negative")
+        return PAPlusTokenizerContext(
+            definition_predicates=definitions,
+            target_statements=tuple(targets),
+            variable_symbols=tuple(sorted(database.variable_types)),
+            bounded_nat_max=bounded_nat_max,
+            max_target_hints=max_target_hints,
         )
 
     def __len__(self) -> int:
@@ -234,7 +320,9 @@ class MetamathTokenizer:
         variables: CanonicalVariables | None = None,
     ) -> list[str]:
         canonical = variables or self.canonical_variables(theorem)
-        tokens = ["<BOS>", "<STATE>", "<HYPOTHESES>"]
+        tokens = ["<BOS>", "<STATE>"]
+        tokens.extend(self._pa_plus_context_tokens(theorem, canonical))
+        tokens.append("<HYPOTHESES>")
         if theorem.hypotheses:
             for hypothesis in theorem.hypotheses:
                 tokens.append("<HYP>")
@@ -254,15 +342,82 @@ class MetamathTokenizer:
         tokens.extend(["<END_STATE>", "<EOS>"])
         return tokens
 
+    @staticmethod
+    def _fixed_symbols(node: Node, variable_types: dict[str, str]) -> set[str]:
+        return {
+            item.op
+            for item in node.walk()
+            if item.op not in variable_types
+            and item.op not in {"|-", "statement"}
+        }
+
+    def _pa_plus_context_tokens(
+        self,
+        theorem: Theorem,
+        variables: CanonicalVariables,
+    ) -> list[str]:
+        context = self.pa_plus_context
+        if not context.enabled:
+            return []
+        expressions = [
+            *(hypothesis.expr for hypothesis in theorem.hypotheses),
+            theorem.conclusion,
+        ]
+        present = {
+            node.op
+            for expression in expressions
+            for node in expression.walk()
+        }
+        definitions = [
+            predicate
+            for predicate in context.definition_predicates
+            if predicate in present
+        ]
+        symbols = set().union(*(
+            self._fixed_symbols(expression, theorem.variable_types)
+            for expression in expressions
+        ))
+        target_scores: list[tuple[float, str]] = []
+        for name, body in context.target_statements:
+            target_symbols = (
+                set(body.split())
+                - set(context.variable_symbols)
+                - {"statement", "|-"}
+            )
+            union = symbols | target_symbols
+            score = len(symbols & target_symbols) / len(union) if union else 0.0
+            if score > 0:
+                target_scores.append((score, name))
+        target_scores.sort(key=lambda item: (-item[0], item[1]))
+        hints = [
+            name for _, name in target_scores[:context.max_target_hints]
+        ]
+        tokens = ["<PA_PLUS_CONTEXT>", "<DEFINITIONS>"]
+        tokens.extend(variables.encode_symbol(item) for item in definitions)
+        tokens.extend(["<END_DEFINITIONS>", "<TARGET_HINTS>"])
+        tokens.extend(hints)
+        tokens.append("<END_TARGET_HINTS>")
+        if not any(
+            typecode == "term"
+            for typecode in theorem.variable_types.values()
+        ):
+            tokens.append("<GROUND_TERMS>")
+        tokens.append("<END_PA_PLUS_CONTEXT>")
+        return tokens
+
     def action_tokens(
         self,
         theorem: Theorem,
         database: Database,
         variables: CanonicalVariables | None = None,
+        *,
+        rule_lookup: dict[str, Theorem] | None = None,
     ) -> list[str]:
         if theorem.proof is None:
             raise ValueError(f"{theorem.name} has no generated proof action")
         rule = database.statements.get(theorem.proof.rule)
+        if rule is None and rule_lookup is not None:
+            rule = rule_lookup.get(theorem.proof.rule)
         if rule is None:
             raise ValueError(f"unknown proof rule {theorem.proof.rule!r}")
         canonical = variables or self.canonical_variables(theorem)
@@ -282,6 +437,7 @@ class MetamathTokenizer:
             substitution,
             canonical,
             variable_order=floating_order,
+            rule_variable_types=rule.variable_types,
         )
 
     def tactic_tokens(
@@ -291,21 +447,37 @@ class MetamathTokenizer:
         variables: CanonicalVariables,
         *,
         variable_order: Iterable[str] | None = None,
+        rule_variable_types: dict[str, str] | None = None,
     ) -> list[str]:
         tokens = [
             "<BOS>",
             "<ACTION>",
             "<APPLY>",
-            "<RULE>",
-            rule_name,
-            "<SUBST>",
         ]
+        if rule_name.startswith("gen_df_"):
+            tokens.extend([
+                "<DEFINITION_BRIDGE>",
+                "<UNFOLD>" if rule_name.endswith("_unfold") else "<FOLD>",
+            ])
+        tokens.extend(["<RULE>", rule_name, "<SUBST>"])
         order = list(variable_order or sorted(substitution))
+        counters: dict[str, int] = {}
+        binding_tokens: dict[str, str] = {}
+        if rule_variable_types is not None:
+            for variable in order:
+                typecode = rule_variable_types[variable]
+                index = counters.get(typecode, 0)
+                counters[typecode] = index + 1
+                binding_tokens[variable] = variable_token(typecode, index)
         for variable in order:
             value = substitution.get(variable)
             if value is None:
                 continue
-            tokens.extend(["<BIND>", variable, "<TO>"])
+            tokens.extend([
+                "<BIND>",
+                binding_tokens.get(variable, variable),
+                "<TO>",
+            ])
             tokens.extend(self._node_tokens(value, variables))
             tokens.append("<END_BIND>")
         tokens.extend(["<END_ACTION>", "<EOS>"])
@@ -356,6 +528,42 @@ class MetamathTokenizer:
             tokens,
             self.config,
             preserve_token_order=True,
+            pa_plus_context=self.pa_plus_context,
+        )
+
+    def upgraded_for_pa_plus(
+        self,
+        database: Database,
+        definition_predicates: Iterable[str],
+        target_statements: Iterable[str],
+        *,
+        bounded_nat_max: int = 2,
+        max_target_hints: int = 3,
+    ) -> "MetamathTokenizer":
+        """Append PA+ symbols and controls without changing existing IDs."""
+
+        context = self.pa_plus_context_from_database(
+            database,
+            definition_predicates,
+            target_statements,
+            bounded_nat_max=bounded_nat_max,
+            max_target_hints=max_target_hints,
+        )
+        fresh = self.from_database(
+            database,
+            self.config,
+            pa_plus_context=context,
+        )
+        tokens = [*self.tokens]
+        tokens.extend(
+            token for token in fresh.tokens
+            if token not in self.token_to_id
+        )
+        return MetamathTokenizer(
+            tokens,
+            self.config,
+            preserve_token_order=True,
+            pa_plus_context=context,
         )
 
     def theorem_from_state_tokens(
@@ -436,8 +644,9 @@ class MetamathTokenizer:
         Path(path).write_text(
             json.dumps(
                 {
-                    "format": "peano-metamath-tokenizer-v1",
+                    "format": "peano-metamath-tokenizer-v2",
                     "config": asdict(self.config),
+                    "pa_plus_context": asdict(self.pa_plus_context),
                     "tokens": list(self.tokens),
                 },
                 ensure_ascii=False,
@@ -450,10 +659,25 @@ class MetamathTokenizer:
     @classmethod
     def load(cls, path: str | Path) -> "MetamathTokenizer":
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
-        if payload.get("format") != "peano-metamath-tokenizer-v1":
+        if payload.get("format") not in {
+            "peano-metamath-tokenizer-v1",
+            "peano-metamath-tokenizer-v2",
+        }:
             raise ValueError("unsupported tokenizer format")
+        context_payload = payload.get("pa_plus_context") or {}
+        context_payload["definition_predicates"] = tuple(
+            context_payload.get("definition_predicates", ())
+        )
+        context_payload["target_statements"] = tuple(
+            tuple(item)
+            for item in context_payload.get("target_statements", ())
+        )
+        context_payload["variable_symbols"] = tuple(
+            context_payload.get("variable_symbols", ())
+        )
         return cls(
             payload["tokens"],
             TokenizerConfig(**payload["config"]),
             preserve_token_order=True,
+            pa_plus_context=PAPlusTokenizerContext(**context_payload),
         )

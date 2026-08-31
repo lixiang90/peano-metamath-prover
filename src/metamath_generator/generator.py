@@ -144,6 +144,8 @@ class TheoremGenerator(_CompositionEngine):
         self._definition_support: dict[int, frozenset[str]] = {}
         self._definition_only_search: Counter[str] = Counter()
         self._admission_context = "search"
+        self.generation_context: dict[int, str] = {}
+        self.guidance_targets: dict[int, str] = {}
         self._definitions_bootstrapped = False
         self._bounded_instances_bootstrapped = False
         self._definition_bridges: dict[str, list[int]] = defaultdict(list)
@@ -388,6 +390,9 @@ class TheoremGenerator(_CompositionEngine):
         self._by_conclusion[profile.conclusion_key].add(theorem_id)
         self._new_ids.append(theorem_id)
         self._definition_support[theorem_id] = definition_support
+        self.generation_context[theorem_id] = self._admission_context
+        if self._current_target is not None:
+            self.guidance_targets[theorem_id] = self._current_target
         self._target_report_cache = None
         self.stats["stored"] += 1
         self.rule_usage[stored.proof.rule if stored.proof else stored.name] += 1
@@ -708,10 +713,7 @@ class TheoremGenerator(_CompositionEngine):
                         theorem = compose(
                             ax_mp,
                             [definition, bridge],
-                            name=(
-                                f"gen{len(self.store)}_df_"
-                                f"{predicate}_{direction}"
-                            ),
+                            name=f"gen_df_{predicate}_{direction}",
                             database=self.parsed,
                         )
                     except CompositionError:
@@ -980,6 +982,10 @@ class TheoremGenerator(_CompositionEngine):
         }
         self._target_report_cache = report
         return dict(report)
+
+    @property
+    def definition_support(self) -> dict[int, frozenset[str]]:
+        return self._definition_support
 
     def summary(self) -> GenerationSummary:
         target_report = self._target_similarity_report()

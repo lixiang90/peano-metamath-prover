@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import torch
@@ -186,6 +186,71 @@ class ProofTransformer(nn.Module):
             + self.candidate_action(candidate_pooled)
         )
         return self.candidate_score(hidden).squeeze(-1), value
+
+    def score_candidate_matrix(
+        self,
+        state_ids: Tensor,
+        candidate_ids: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Score each batch state against every batch candidate action."""
+
+        memory, padding, value = self.encode(state_ids)
+        state_weights = (~padding).unsqueeze(-1).to(memory.dtype)
+        state_pooled = (memory * state_weights).sum(dim=1) / (
+            state_weights.sum(dim=1).clamp_min(1.0)
+        )
+        candidate_padding = candidate_ids.eq(self.config.pad_id)
+        candidate = self._embed(candidate_ids, self.action_position)
+        candidate_weights = (~candidate_padding).unsqueeze(-1).to(
+            candidate.dtype
+        )
+        candidate_pooled = (
+            (candidate * candidate_weights).sum(dim=1)
+            / candidate_weights.sum(dim=1).clamp_min(1.0)
+        )
+        hidden = (
+            self.candidate_state(state_pooled)[:, None, :]
+            + self.candidate_action(candidate_pooled)[None, :, :]
+        )
+        return self.candidate_score(hidden).squeeze(-1), value
+
+    def resize_vocabulary(self, vocabulary_size: int) -> dict[str, int]:
+        """Append randomly initialized vocabulary rows in-place."""
+
+        old_size = self.config.vocab_size
+        if vocabulary_size < old_size:
+            raise ValueError("vocabulary shrinking is not supported")
+        if vocabulary_size == old_size:
+            return {"old_size": old_size, "new_size": old_size, "added": 0}
+        device = self.token_embedding.weight.device
+        dtype = self.token_embedding.weight.dtype
+        embedding = nn.Embedding(
+            vocabulary_size,
+            self.config.d_model,
+            padding_idx=self.config.pad_id,
+            device=device,
+            dtype=dtype,
+        )
+        policy = nn.Linear(
+            self.config.d_model,
+            vocabulary_size,
+            device=device,
+            dtype=dtype,
+        )
+        self._initialize(embedding)
+        self._initialize(policy)
+        with torch.no_grad():
+            embedding.weight[:old_size].copy_(self.token_embedding.weight)
+            policy.weight[:old_size].copy_(self.policy_head.weight)
+            policy.bias[:old_size].copy_(self.policy_head.bias)
+        self.token_embedding = embedding
+        self.policy_head = policy
+        self.config = replace(self.config, vocab_size=vocabulary_size)
+        return {
+            "old_size": old_size,
+            "new_size": vocabulary_size,
+            "added": vocabulary_size - old_size,
+        }
 
     def decode(
         self,

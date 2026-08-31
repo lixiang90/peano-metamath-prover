@@ -9,7 +9,9 @@ from unittest.mock import patch
 from pathlib import Path
 
 from metamath_generator.model import Hypothesis, Node, Theorem
+from metamath_generator.definitions import load_definition_catalog
 from metamath_generator.parser import parse
+from metamath_generator.unification import substitute_simultaneous
 from neural_prover.benchmark import (
     BenchmarkBuildConfig,
     build_benchmarks,
@@ -35,6 +37,8 @@ from neural_prover.tokenizer import MetamathTokenizer
 
 ROOT = Path(__file__).resolve().parents[1]
 PEANO_NT = ROOT / "formal" / "peano-number-theory.mm"
+PA_PLUS = ROOT / "formal" / "peano-pa-plus.mm"
+PA_PLUS_CATALOG = ROOT / "formal" / "pa-plus-definitions.json"
 TORCH_AVAILABLE = importlib.util.find_spec("torch") is not None
 
 
@@ -54,6 +58,108 @@ class NeuralTokenizerTests(unittest.TestCase):
         self.assertIn("implies", tokens)
         self.assertNotIn(self.tokenizer.token_to_id["<UNK>"], ids)
 
+    def test_pa_plus_context_and_bounded_inference_are_formal(self) -> None:
+        database = parse(PA_PLUS)
+        catalog = load_definition_catalog(PA_PLUS_CATALOG)
+        context = MetamathTokenizer.pa_plus_context_from_database(
+            database,
+            catalog.definition_names,
+            catalog.statement_names,
+            bounded_nat_max=2,
+        )
+        tokenizer = MetamathTokenizer.from_database(
+            database, pa_plus_context=context
+        )
+        statement = database.syntax_statements[
+            "factorial-zero-statement"
+        ]
+        target = Theorem(
+            "factorial-zero-target",
+            [],
+            Node("|-", statement.conclusion.args),
+        )
+        tokens = tokenizer.state_tokens(target)
+        self.assertIn("<PA_PLUS_CONTEXT>", tokens)
+        self.assertIn("factorial", tokens)
+        self.assertIn("factorial-zero-statement", tokens)
+        self.assertIn("<GROUND_TERMS>", tokens)
+        self.assertNotIn(tokenizer.token_to_id["<UNK>"], tokenizer.encode(tokens))
+
+        environment = BackwardEnvironment(database)
+        environment.configure_from_tokenizer(tokenizer)
+        state = ProofState.from_theorem(target)
+        candidates = environment._local_candidate_expressions(
+            state, "term", 12
+        )
+        self.assertEqual(
+            candidates[:3],
+            [
+                Node("0"),
+                Node("S", (Node("0"),)),
+                Node("S", (Node("S", (Node("0"),)),)),
+            ],
+        )
+
+        bridge = environment.assertions["gen_df_factorial_fold"]
+        self.assertIsNotNone(bridge.proof)
+        self.assertTrue(bridge.proof.source_labels)
+
+    def test_pa_plus_bridge_macro_inlines_to_source_certificate(self) -> None:
+        from neural_prover.search import SearchResult
+
+        database = parse(PA_PLUS)
+        catalog = load_definition_catalog(PA_PLUS_CATALOG)
+        context = MetamathTokenizer.pa_plus_context_from_database(
+            database,
+            catalog.definition_names,
+            catalog.statement_names,
+            bounded_nat_max=2,
+        )
+        tokenizer = MetamathTokenizer.from_database(
+            database, pa_plus_context=context
+        )
+        environment = BackwardEnvironment(database)
+        environment.configure_from_tokenizer(tokenizer)
+        bridge = environment.assertions["gen_df_positive_fold"]
+        variable = next(iter(bridge.variable_types))
+        substitution = {variable: Node("S", (Node("0"),))}
+        target = Theorem(
+            "positive-fold-target",
+            [],
+            substitute_simultaneous(bridge.conclusion, substitution),
+        )
+        before = ProofState.from_theorem(target)
+        tactic = Tactic.create(bridge.name, substitution)
+        transition = environment.apply(before, tactic)
+        self.assertTrue(transition.after.solved)
+        result = SearchResult(
+            True,
+            1,
+            2,
+            (tactic,),
+            (transition,),
+            transition.after,
+        )
+        certificate = compile_certificate(target, result, database)
+        verify_certificate(certificate, database)
+        self.assertNotIn(bridge.name, certificate.proof.source_labels)
+        self.assertIn("df-positive", certificate.proof.source_labels)
+
+    def test_pa_plus_upgrade_preserves_old_token_ids(self) -> None:
+        database = parse(PA_PLUS)
+        catalog = load_definition_catalog(PA_PLUS_CATALOG)
+        upgraded = self.tokenizer.upgraded_for_pa_plus(
+            database,
+            catalog.definition_names,
+            catalog.statement_names,
+        )
+        self.assertEqual(
+            upgraded.tokens[:len(self.tokenizer)],
+            self.tokenizer.tokens,
+        )
+        self.assertIn("<PA_PLUS_CONTEXT>", upgraded.token_to_id)
+        self.assertIn("gen_df_factorial_unfold", upgraded.token_to_id)
+
     def test_state_tokens_round_trip_to_typed_theorem(self) -> None:
         theorem = self.database.logical_assertions["eq-sym"]
         tokens = self.tokenizer.state_tokens(theorem)
@@ -64,6 +170,30 @@ class NeuralTokenizerTests(unittest.TestCase):
             self.tokenizer.state_tokens(decoded),
             tokens,
         )
+
+    def test_typed_rule_variable_action_round_trip(self) -> None:
+        theorem = self.database.logical_assertions["eq-sym"]
+        canonical = self.tokenizer.canonical_variables(theorem)
+        order = [
+            floating.expr.args[0].op for floating in theorem.floating
+        ] or list(theorem.variable_types)
+        substitution = {
+            variable: Node(variable) for variable in order
+        }
+        tokens = self.tokenizer.tactic_tokens(
+            theorem.name,
+            substitution,
+            canonical,
+            variable_order=order,
+            rule_variable_types=theorem.variable_types,
+        )
+        self.assertTrue(any(
+            token.startswith("<V:term:") for token in tokens
+        ))
+        restored = parse_tactic_tokens(
+            tokens, theorem, self.tokenizer, self.database
+        )
+        self.assertEqual(restored, Tactic.create(theorem.name, substitution))
 
     def test_decoded_distinct_pairs_are_normalized(self) -> None:
         theorem = self.database.logical_assertions["alpha_1"]
@@ -589,6 +719,18 @@ class TorchNeuralTests(unittest.TestCase):
         )
         self.assertEqual(tuple(logits.shape), (3,))
         self.assertEqual(tuple(value.shape), (1,))
+        matrix, batch_value = model.score_candidate_matrix(
+            torch.randint(4, 64, (3, 8)),
+            torch.randint(4, 64, (3, 7)),
+        )
+        self.assertEqual(tuple(matrix.shape), (3, 3))
+        self.assertEqual(tuple(batch_value.shape), (3,))
+        old_embedding = model.token_embedding.weight.detach().clone()
+        expansion = model.resize_vocabulary(71)
+        self.assertEqual(expansion["added"], 7)
+        self.assertTrue(torch.equal(
+            model.token_embedding.weight[:64], old_embedding
+        ))
         model.candidate_head_trained = True
         with tempfile.TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "candidate.pt"

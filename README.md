@@ -173,6 +173,21 @@ python -m neural_prover audit-corpus \
   --output outputs/corpus/audit.json
 ```
 
+PA+ 神经语料可以直接复用定义目录、闭式实例和35目标反向引导：
+
+```bash
+python -m neural_prover build-corpus \
+  formal/peano-pa-plus.mm outputs/pa-plus-corpus \
+  --definition-catalog formal/pa-plus-definitions.json \
+  --bootstrap-definitions --definition-coverage-weight 3 \
+  --bounded-nat-max 2 --ground-instances-per-predicate 1 \
+  --target-guidance-weight 4 \
+  --max-definition-only-search-per-predicate 1
+```
+
+词表、候选头训练、旧 checkpoint 升级和推理时的保守定义桥见
+[PA+ 神经训练与闭环推理](docs/pa-plus-neural-training.md)。
+
 构建去重的百万级分片语料：
 
 ```bash
@@ -282,6 +297,9 @@ Beam/MCTS 探索、执行与回溯
 35 个闭合目标公式。编译器自动生成 `$d` 条件并拒绝自由变量泄漏、递归或前向
 定义依赖；具体接口和重新生成命令见
 [PA+ 分层定义库与生成接口](docs/pa-plus-definitions.md)。
+神经侧会把定义目录、目标提示和有界闭项编码成结构化上下文，并把生成期定义桥
+内联为原始 `df-*` 证明；具体设计与本地 GPU 验证见
+[PA+ 神经训练与闭环推理](docs/pa-plus-neural-training.md)。
 
 ## 可信边界
 

@@ -8,6 +8,7 @@ from metamath_generator.model import (
     Database,
     Hypothesis,
     Node,
+    Proof,
     Theorem,
     normalized_pair,
 )
@@ -19,7 +20,11 @@ from metamath_generator.unification import (
     unify,
 )
 
-from .tokenizer import CanonicalVariables, MetamathTokenizer
+from .tokenizer import (
+    VARIABLE_TOKEN_PATTERN,
+    CanonicalVariables,
+    MetamathTokenizer,
+)
 
 
 class InvalidTactic(ValueError):
@@ -113,6 +118,7 @@ class Transition:
     after: ProofState
     generated_goals: tuple[Node, ...]
     resolved_substitution: tuple[tuple[str, Node], ...] = ()
+    assertion: Theorem | None = None
 
 
 class BackwardEnvironment:
@@ -164,6 +170,159 @@ class BackwardEnvironment:
         self._well_typed_cache: dict[
             tuple[tuple[Node, ...], tuple[tuple[str, str], ...]], bool
         ] = {}
+        self._bounded_nat_max = -1
+        self._target_formulas: tuple[Node, ...] = ()
+
+    def configure_from_tokenizer(
+        self,
+        tokenizer: MetamathTokenizer,
+    ) -> None:
+        """Enable PA+ bounded terms and target ordering from tokenizer metadata."""
+
+        context = tokenizer.pa_plus_context
+        if not context.enabled:
+            return
+        self._install_pa_plus_bridges(context.definition_predicates)
+        targets: list[Node] = []
+        for _, body in context.target_statements:
+            try:
+                parsed = self._parser.parse_expression([
+                    "wff", *body.split()
+                ])
+            except ParseError as exc:
+                raise ValueError(
+                    f"invalid target formula in tokenizer: {body}"
+                ) from exc
+            if len(parsed.args) != 1:
+                raise ValueError("target formula did not parse as one wff")
+            targets.append(parsed.args[0])
+        self._bounded_nat_max = context.bounded_nat_max
+        self._target_formulas = tuple(targets)
+        self._local_candidate_cache.clear()
+        self._candidate_cache.clear()
+        self._tactic_cache.clear()
+        self._one_step_closure_cache.clear()
+
+    def _install_pa_plus_bridges(
+        self,
+        definition_predicates: tuple[str, ...],
+    ) -> None:
+        if not definition_predicates:
+            return
+        from metamath_generator.export import (
+            _SyntaxCompiler,
+            _generated_proof,
+        )
+        from metamath_generator.generator import (
+            GenerationConfig,
+            TheoremGenerator,
+        )
+
+        generator = TheoremGenerator(
+            self.database,
+            GenerationConfig(
+                focus_predicates=definition_predicates,
+                bootstrap_definitions=True,
+            ),
+        )
+        generator.generate("random", 0)
+        for bridge in generator.store.generated():
+            if bridge.name in self.assertions:
+                continue
+            all_types = {
+                **bridge.proof_variable_types,
+                **bridge.variable_types,
+            }
+            floating = tuple(
+                Hypothesis(
+                    f"{bridge.name}_f{index}",
+                    Node(typecode, (Node(variable),)),
+                )
+                for index, (variable, typecode) in enumerate(
+                    sorted(all_types.items())
+                )
+            )
+            floating_map = {
+                item.expr.args[0].op: (item.label, item.expr.op)
+                for item in floating
+            }
+            compiler = _SyntaxCompiler(generator.store, floating_map)
+            labels = tuple(
+                _generated_proof(bridge, generator.store, compiler)
+            )
+            derived = Theorem(
+                name=bridge.name,
+                hypotheses=list(bridge.hypotheses),
+                conclusion=bridge.conclusion,
+                d_constraints=set(bridge.d_constraints),
+                variable_types=dict(bridge.variable_types),
+                floating=floating,
+                proof=Proof(
+                    rule=bridge.name,
+                    source_labels=labels,
+                    depth=bridge.proof_depth,
+                ),
+                kind="derived",
+            )
+            self.assertions[derived.name] = derived
+
+    @staticmethod
+    def _numeral(value: int) -> Node:
+        result = Node("0")
+        for _ in range(value):
+            result = Node("S", (result,))
+        return result
+
+    def _fixed_symbols(
+        self,
+        expression: Node,
+        variable_types: dict[str, str] | None = None,
+    ) -> set[str]:
+        variables = set(self.database.variable_types)
+        variables.update((variable_types or {}).keys())
+        return {
+            node.op for node in expression.walk()
+            if node.op not in variables
+            and node.op not in {"|-", "statement"}
+        }
+
+    def _ordered_assertions(self, state: ProofState) -> list[Theorem]:
+        assertions = list(self.assertions.values())
+        if not self._target_formulas:
+            return assertions
+        goal_symbols = self._fixed_symbols(
+            state.current_goal, dict(state.variable_types)
+        )
+        target_ranked: list[tuple[float, set[str]]] = []
+        for target in self._target_formulas:
+            target_symbols = self._fixed_symbols(target)
+            union = goal_symbols | target_symbols
+            similarity = (
+                len(goal_symbols & target_symbols) / len(union)
+                if union else 0.0
+            )
+            target_ranked.append((similarity, target_symbols))
+        target_ranked.sort(key=lambda item: item[0], reverse=True)
+        context_symbols = set(goal_symbols)
+        for _, symbols in target_ranked[:3]:
+            context_symbols.update(symbols)
+
+        def priority(assertion: Theorem) -> tuple[float, int, str]:
+            symbols = self._fixed_symbols(
+                assertion.conclusion, assertion.variable_types
+            )
+            for hypothesis in assertion.hypotheses:
+                symbols.update(self._fixed_symbols(
+                    hypothesis.expr, assertion.variable_types
+                ))
+            union = symbols | context_symbols
+            overlap = (
+                len(symbols & context_symbols) / len(union)
+                if union else 0.0
+            )
+            return (-overlap, len(assertion.hypotheses), assertion.name)
+
+        return sorted(assertions, key=priority)
 
     def reset_metrics(self) -> None:
         self.metrics = EnvironmentMetrics()
@@ -487,6 +646,7 @@ class BackwardEnvironment:
             after,
             pending,
             tuple(sorted(substitution.items())),
+            assertion,
         )
         self._transition_cache[cache_key] = transition
         return transition
@@ -549,7 +709,7 @@ class BackwardEnvironment:
         seen = set(nodes)
         closed_assertions = [
             assertion
-            for assertion in self.assertions.values()
+            for assertion in self._ordered_assertions(state)
             if (
                 not assertion.hypotheses
                 and assertion.conclusion.op == "|-"
@@ -709,6 +869,15 @@ class BackwardEnvironment:
         types = dict(state.variable_types)
         nodes: list[Node] = []
         seen: set[Node] = set()
+        if typecode == "term" and self._bounded_nat_max >= 0:
+            for value in range(self._bounded_nat_max + 1):
+                numeral = self._numeral(value)
+                if numeral not in seen:
+                    seen.add(numeral)
+                    nodes.append(numeral)
+                    if len(nodes) >= limit:
+                        self._local_candidate_cache[cache_key] = tuple(nodes)
+                        return nodes
         for expression in [state.current_goal, *state.hypotheses]:
             roots = expression.args if len(expression.args) == 1 else (expression,)
             for root in roots:
@@ -752,7 +921,12 @@ class BackwardEnvironment:
         tactics: list[Tactic] = []
         if state.current_goal in state.hypotheses:
             tactics.append(Tactic.create("<ASSUMPTION>"))
-        for assertion in self.assertions.values():
+        per_assertion_limit = max(
+            1,
+            min(16, max_tactics // 4 if max_tactics >= 4 else 1),
+        )
+        for assertion in self._ordered_assertions(state):
+            assertion_added = 0
             try:
                 base = self._unify_schema(
                     assertion.conclusion,
@@ -799,10 +973,13 @@ class BackwardEnvironment:
                 except InvalidTactic:
                     continue
                 tactics.append(tactic)
+                assertion_added += 1
                 if len(tactics) >= max_tactics:
                     self._tactic_cache[cache_key] = tuple(tactics)
                     self.metrics.candidates_returned += len(tactics)
                     return tactics
+                if assertion_added >= per_assertion_limit:
+                    break
         self._tactic_cache[cache_key] = tuple(tactics)
         self.metrics.candidates_returned += len(tactics)
         return tactics
@@ -876,6 +1053,31 @@ def parse_tactic_tokens(
             if token != "<BIND>" or cursor + 3 >= len(sequence):
                 raise InvalidTactic("malformed substitution binding")
             variable = sequence[cursor + 1]
+            match = VARIABLE_TOKEN_PATTERN.match(variable)
+            if match is not None:
+                requested_type = match.group(1)
+                requested_index = int(match.group(2))
+                counters: dict[str, int] = {}
+                resolved = None
+                order = [
+                    floating.expr.args[0].op
+                    for floating in rule.floating
+                ] or list(rule.variable_types)
+                for candidate in order:
+                    candidate_type = rule.variable_types[candidate]
+                    index = counters.get(candidate_type, 0)
+                    counters[candidate_type] = index + 1
+                    if (
+                        candidate_type == requested_type
+                        and index == requested_index
+                    ):
+                        resolved = candidate
+                        break
+                if resolved is None:
+                    raise InvalidTactic(
+                        f"unknown typed rule variable {variable}"
+                    )
+                variable = resolved
             if sequence[cursor + 2] != "<TO>":
                 raise InvalidTactic("binding lacks TO marker")
             try:

@@ -52,6 +52,24 @@ def build_parser() -> argparse.ArgumentParser:
     corpus.add_argument("--depth-parent-bias", type=float, default=0.0)
     corpus.add_argument("--max-state-tokens", type=int, default=256)
     corpus.add_argument("--max-action-tokens", type=int, default=192)
+    corpus.add_argument("--definition-catalog")
+    corpus.add_argument("--bootstrap-definitions", action="store_true")
+    corpus.add_argument(
+        "--definition-coverage-weight", type=float, default=0.0
+    )
+    corpus.add_argument("--bounded-nat-max", type=int, default=-1)
+    corpus.add_argument(
+        "--ground-instances-per-predicate", type=int, default=0
+    )
+    corpus.add_argument(
+        "--target-guidance-weight", type=float, default=0.0
+    )
+    corpus.add_argument(
+        "--max-definition-only-search-per-predicate",
+        type=int,
+        default=-1,
+    )
+    corpus.add_argument("--max-target-hints", type=int, default=3)
 
     benchmark = commands.add_parser(
         "build-benchmark",
@@ -100,6 +118,25 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--device", default="auto")
     train.add_argument("--d-model", type=int, default=128)
     train.add_argument("--layers", type=int, default=3)
+    train.add_argument(
+        "--candidate-loss-weight", type=float, default=0.25
+    )
+    train.add_argument(
+        "--no-pa-plus-balanced-sampling", action="store_true"
+    )
+
+    upgrade_pa = commands.add_parser(
+        "upgrade-pa-plus",
+        help="append PA+ vocabulary/context to an existing checkpoint",
+    )
+    upgrade_pa.add_argument("checkpoint")
+    upgrade_pa.add_argument("tokenizer")
+    upgrade_pa.add_argument("database")
+    upgrade_pa.add_argument("definition_catalog")
+    upgrade_pa.add_argument("output_checkpoint")
+    upgrade_pa.add_argument("output_tokenizer")
+    upgrade_pa.add_argument("--bounded-nat-max", type=int, default=2)
+    upgrade_pa.add_argument("--max-target-hints", type=int, default=3)
 
     evaluate = commands.add_parser(
         "evaluate",
@@ -363,6 +400,18 @@ def main(argv: list[str] | None = None) -> int:
                 depth_parent_bias=args.depth_parent_bias,
                 max_state_tokens=args.max_state_tokens,
                 max_action_tokens=args.max_action_tokens,
+                definition_catalog=args.definition_catalog,
+                bootstrap_definitions=args.bootstrap_definitions,
+                definition_coverage_weight=
+                    args.definition_coverage_weight,
+                bounded_nat_max=args.bounded_nat_max,
+                ground_instances_per_predicate=
+                    args.ground_instances_per_predicate,
+                target_guidance_weight=args.target_guidance_weight,
+                max_definition_only_search_per_predicate=(
+                    args.max_definition_only_search_per_predicate
+                ),
+                max_target_hints=args.max_target_hints,
             ),
         )
         print(json.dumps(manifest["counts"], ensure_ascii=False))
@@ -405,12 +454,62 @@ def main(argv: list[str] | None = None) -> int:
                 d_model=args.d_model,
                 encoder_layers=args.layers,
                 decoder_layers=args.layers,
+                candidate_loss_weight=args.candidate_loss_weight,
+                pa_plus_balanced_sampling=
+                    not args.no_pa_plus_balanced_sampling,
             ),
         )
         print(json.dumps({
             "device": summary["device"],
             "best_validation_loss": summary["best_validation_loss"],
             "best_checkpoint": summary["best_checkpoint"],
+        }, ensure_ascii=False))
+        return 0
+    if args.command == "upgrade-pa-plus":
+        import torch
+
+        from metamath_generator.definitions import load_definition_catalog
+
+        from .latent_model import LatentProofTransformer
+        from .model import ProofTransformer
+
+        database = parse(args.database)
+        catalog = load_definition_catalog(args.definition_catalog)
+        tokenizer = MetamathTokenizer.load(args.tokenizer)
+        upgraded = tokenizer.upgraded_for_pa_plus(
+            database,
+            catalog.definition_names,
+            catalog.statement_names,
+            bounded_nat_max=args.bounded_nat_max,
+            max_target_hints=args.max_target_hints,
+        )
+        payload = torch.load(
+            args.checkpoint, map_location="cpu", weights_only=False
+        )
+        checkpoint_format = payload.get("format")
+        if checkpoint_format == "peano-proof-transformer-v1":
+            model, original = ProofTransformer.load_checkpoint(args.checkpoint)
+        elif checkpoint_format == "peano-latent-proof-transformer-v1":
+            model, original = LatentProofTransformer.load_checkpoint(
+                args.checkpoint
+            )
+        else:
+            raise SystemExit(
+                f"unsupported checkpoint format: {checkpoint_format}"
+            )
+        expansion = model.resize_vocabulary(len(upgraded))
+        checkpoint_path = Path(args.output_checkpoint)
+        tokenizer_path = Path(args.output_tokenizer)
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        tokenizer_path.parent.mkdir(parents=True, exist_ok=True)
+        upgraded.save(tokenizer_path)
+        metadata = dict(original.get("metadata", {}))
+        metadata["pa_plus_vocabulary"] = expansion
+        model.save_checkpoint(checkpoint_path, metadata=metadata)
+        print(json.dumps({
+            "checkpoint": str(checkpoint_path.resolve()),
+            "tokenizer": str(tokenizer_path.resolve()),
+            "vocabulary_expansion": expansion,
         }, ensure_ascii=False))
         return 0
     if args.command == "evaluate":
