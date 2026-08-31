@@ -1,0 +1,798 @@
+{
+  "format": "pa-plus-definition-catalog-v1",
+  "include": "peano-number-theory.mm",
+  "definitions": [
+    {
+      "name": "natne",
+      "parameters": ["a", "b"],
+      "body": "not = a b",
+      "area": "order",
+      "summary": "Natural-number disequality.",
+      "theorem_families": ["uniqueness", "parity", "irrationality certificates"]
+    },
+    {
+      "name": "positive",
+      "parameters": ["a"],
+      "body": "< 0 a",
+      "area": "order",
+      "summary": "Strict positivity.",
+      "theorem_families": ["division algorithm", "Archimedean bounds"]
+    },
+    {
+      "name": "ge",
+      "parameters": ["a", "b"],
+      "body": "le b a",
+      "area": "order",
+      "summary": "Greater-than-or-equal relation.",
+      "theorem_families": ["bounds", "monotonicity"]
+    },
+    {
+      "name": "gt",
+      "parameters": ["a", "b"],
+      "body": "< b a",
+      "area": "order",
+      "summary": "Greater-than relation.",
+      "theorem_families": ["bounds", "descent"]
+    },
+    {
+      "name": "between",
+      "parameters": ["a", "b", "c"],
+      "body": "and le a b le b c",
+      "area": "order",
+      "summary": "Closed natural-number interval membership.",
+      "theorem_families": ["finite intervals", "bounded search"]
+    },
+    {
+      "name": "natdiff",
+      "parameters": ["a", "b", "c"],
+      "body": "= a + b c",
+      "area": "order",
+      "summary": "Truncated-free subtraction graph: a minus b equals c when b is at most a.",
+      "theorem_families": ["division algorithm", "binomial symmetry"]
+    },
+    {
+      "name": "minrel",
+      "parameters": ["a", "b", "c"],
+      "body": "or and le a b = c a and le b a = c b",
+      "area": "order",
+      "summary": "Graph of minimum on naturals.",
+      "theorem_families": ["lattice identities", "bounds"]
+    },
+    {
+      "name": "maxrel",
+      "parameters": ["a", "b", "c"],
+      "body": "or and le a b = c b and le b a = c a",
+      "area": "order",
+      "summary": "Graph of maximum on naturals.",
+      "theorem_families": ["lattice identities", "bounds"]
+    },
+    {
+      "name": "properdivides",
+      "parameters": ["a", "b"],
+      "body": "and divides a b < a b",
+      "area": "number-theory",
+      "summary": "Proper divisor relation.",
+      "theorem_families": ["prime characterizations", "perfect numbers"]
+    },
+    {
+      "name": "composite",
+      "parameters": ["a"],
+      "body": "exists x0 exists x1 and < S 0 x0 and < S 0 x1 = a * x0 x1",
+      "area": "number-theory",
+      "summary": "Composite positive natural.",
+      "theorem_families": ["prime/composite dichotomy", "factorization"]
+    },
+    {
+      "name": "coprime",
+      "parameters": ["a", "b"],
+      "body": "forall x0 implies and divides x0 a divides x0 b = x0 S 0",
+      "area": "number-theory",
+      "summary": "The only common positive divisor is one.",
+      "theorem_families": ["Bezout", "Euler theorem", "Chinese remainder theorem"]
+    },
+    {
+      "name": "gcdrel",
+      "parameters": ["a", "b", "c"],
+      "body": "and divides c a and divides c b forall x0 implies and divides x0 a divides x0 b divides x0 c",
+      "area": "number-theory",
+      "summary": "Greatest common divisor by its universal divisibility property.",
+      "theorem_families": ["gcd existence", "Euclidean algorithm", "Bezout"]
+    },
+    {
+      "name": "lcmrel",
+      "parameters": ["a", "b", "c"],
+      "body": "and divides a c and divides b c forall x0 implies and divides a x0 divides b x0 divides c x0",
+      "area": "number-theory",
+      "summary": "Least common multiple by its universal divisibility property.",
+      "theorem_families": ["lcm existence", "gcd-lcm product"]
+    },
+    {
+      "name": "congruent",
+      "parameters": ["a", "b", "c"],
+      "body": "and positive c exists x0 exists x1 = + a * c x0 + b * c x1",
+      "area": "number-theory",
+      "summary": "Congruence modulo c without a subtraction primitive.",
+      "theorem_families": ["modular arithmetic", "Fermat theorem", "CRT"]
+    },
+    {
+      "name": "remainder",
+      "parameters": ["a", "b", "c"],
+      "body": "and < c b congruent a c b",
+      "area": "number-theory",
+      "summary": "Remainder c of a modulo positive b.",
+      "theorem_families": ["division algorithm", "modular normalization"]
+    },
+    {
+      "name": "square",
+      "parameters": ["a"],
+      "body": "exists x0 = a * x0 x0",
+      "area": "number-theory",
+      "summary": "Perfect square.",
+      "theorem_families": ["quadratic Diophantine equations", "squarefree numbers"]
+    },
+    {
+      "name": "cube",
+      "parameters": ["a"],
+      "body": "exists x0 = a * * x0 x0 x0",
+      "area": "number-theory",
+      "summary": "Perfect cube.",
+      "theorem_families": ["cubic Diophantine equations"]
+    },
+    {
+      "name": "sumtwosquares",
+      "parameters": ["a"],
+      "body": "exists x0 exists x1 = a + * x0 x0 * x1 x1",
+      "area": "number-theory",
+      "summary": "Representation as a sum of two squares.",
+      "theorem_families": ["Fermat two-square theorem"]
+    },
+    {
+      "name": "sumfoursquares",
+      "parameters": ["a"],
+      "body": "exists x0 exists x1 exists x2 exists x3 = a + * x0 x0 + * x1 x1 + * x2 x2 * x3 x3",
+      "area": "number-theory",
+      "summary": "Representation as a sum of four squares.",
+      "theorem_families": ["Lagrange four-square theorem"]
+    },
+    {
+      "name": "pythagorean",
+      "parameters": ["a", "b", "c"],
+      "body": "= + * a a * b b * c c",
+      "area": "number-theory",
+      "summary": "Pythagorean triple equation.",
+      "theorem_families": ["Pythagorean parametrization"]
+    },
+    {
+      "name": "pellsolution",
+      "parameters": ["a", "b", "c"],
+      "body": "= * b b + S 0 * a * c c",
+      "area": "number-theory",
+      "summary": "Positive Pell equation solution x squared minus d y squared equals one.",
+      "theorem_families": ["Pell equation"]
+    },
+    {
+      "name": "quadraticresidue",
+      "parameters": ["a", "b"],
+      "body": "and positive b exists x0 congruent * x0 x0 a b",
+      "area": "number-theory",
+      "summary": "Quadratic residue modulo b.",
+      "theorem_families": ["Euler criterion", "quadratic reciprocity"]
+    },
+    {
+      "name": "squarefree",
+      "parameters": ["a"],
+      "body": "forall x0 implies divides * x0 x0 a = x0 S 0",
+      "area": "number-theory",
+      "summary": "No nontrivial square divides a.",
+      "theorem_families": ["squarefree decomposition", "Mobius identities"]
+    },
+    {
+      "name": "valuation",
+      "parameters": ["a", "b", "c"],
+      "body": "and prime a and positive b exists x0 exists x1 and pow a c x0 and pow a S c x1 and divides x0 b not divides x1 b",
+      "area": "number-theory",
+      "summary": "Prime-adic valuation c of nonzero b.",
+      "theorem_families": ["valuation laws", "factorial valuations"]
+    },
+    {
+      "name": "perfectpower",
+      "parameters": ["a"],
+      "body": "exists x0 exists x1 and < S 0 x0 and < S 0 x1 pow x0 x1 a",
+      "area": "number-theory",
+      "summary": "Power with base and exponent greater than one.",
+      "theorem_families": ["perfect-power decomposition", "Catalan theorem"]
+    },
+    {
+      "name": "multiplicativeorder",
+      "parameters": ["a", "b", "c"],
+      "body": "and < S 0 b and coprime a b and < 0 c and exists x0 and pow a c x0 congruent x0 S 0 b forall x1 implies and < 0 x1 < x1 c exists x2 and pow a x1 x2 not congruent x2 S 0 b",
+      "area": "number-theory",
+      "summary": "Order of a unit modulo b greater than one: the least positive exponent giving one.",
+      "theorem_families": ["order divides phi", "primitive roots"]
+    },
+    {
+      "name": "mersenne",
+      "parameters": ["a", "b"],
+      "body": "exists x0 and pow S S 0 b x0 = x0 S a",
+      "area": "number-theory",
+      "summary": "a equals two to b minus one.",
+      "theorem_families": ["Mersenne primes", "even perfect numbers"]
+    },
+    {
+      "name": "fermatnumber",
+      "parameters": ["a", "b"],
+      "body": "exists x0 exists x1 and pow S S 0 b x0 and pow S S 0 x0 x1 = a S x1",
+      "area": "number-theory",
+      "summary": "a equals two to the power two to b plus one.",
+      "theorem_families": ["Fermat numbers", "constructible polygons"]
+    },
+    {
+      "name": "seqat",
+      "parameters": ["a", "b", "c", "d"],
+      "body": "beta a b c d",
+      "area": "finite-sequences",
+      "summary": "High-level finite sequence lookup hiding the beta primitive.",
+      "theorem_families": ["finite sums", "finite products", "recurrences"]
+    },
+    {
+      "name": "seqsum",
+      "parameters": ["a", "b", "c", "d"],
+      "body": "exists x0 exists x1 and seqat x0 x1 0 0 and seqat x0 x1 c d forall x2 implies < x2 c exists x3 exists x4 exists x5 and seqat a b x2 x3 and seqat x0 x1 x2 x4 and seqat x0 x1 S x2 x5 = x5 + x4 x3",
+      "area": "finite-sequences",
+      "summary": "Sum of the first c entries of a coded natural sequence.",
+      "theorem_families": ["arithmetic series", "finite sum identities"]
+    },
+    {
+      "name": "seqprod",
+      "parameters": ["a", "b", "c", "d"],
+      "body": "exists x0 exists x1 and seqat x0 x1 0 S 0 and seqat x0 x1 c d forall x2 implies < x2 c exists x3 exists x4 exists x5 and seqat a b x2 x3 and seqat x0 x1 x2 x4 and seqat x0 x1 S x2 x5 = x5 * x4 x3",
+      "area": "finite-sequences",
+      "summary": "Product of the first c entries of a coded natural sequence.",
+      "theorem_families": ["factorials", "finite product identities"]
+    },
+    {
+      "name": "factorial",
+      "parameters": ["a", "b"],
+      "body": "exists x0 exists x1 and seqat x0 x1 0 S 0 and seqat x0 x1 a b forall x2 implies < x2 a exists x3 exists x4 and seqat x0 x1 x2 x3 and seqat x0 x1 S x2 x4 = x4 * x3 S x2",
+      "area": "finite-sequences",
+      "summary": "Factorial graph through a hidden certified recurrence trace.",
+      "theorem_families": ["factorial recurrence", "Wilson theorem", "binomial coefficients"]
+    },
+    {
+      "name": "fibonacci",
+      "parameters": ["a", "b"],
+      "body": "exists x0 exists x1 and seqat x0 x1 0 0 and seqat x0 x1 S 0 S 0 and seqat x0 x1 a b forall x2 implies < S x2 a exists x3 exists x4 exists x5 and seqat x0 x1 x2 x3 and seqat x0 x1 S x2 x4 and seqat x0 x1 S S x2 x5 = x5 + x3 x4",
+      "area": "finite-sequences",
+      "summary": "Fibonacci graph through a hidden certified recurrence trace.",
+      "theorem_families": ["Fibonacci identities", "Cassini identity"]
+    },
+    {
+      "name": "binomial",
+      "parameters": ["a", "b", "c"],
+      "body": "or exists x0 exists x1 exists x2 exists x3 and natdiff a b x0 and factorial a x1 and factorial b x2 and factorial x0 x3 = x1 * c * x2 x3 and < a b = c 0",
+      "area": "finite-sequences",
+      "summary": "Total binomial coefficient graph, with value zero when b exceeds a.",
+      "theorem_families": ["Pascal identity", "binomial theorem", "Vandermonde identity"]
+    },
+    {
+      "name": "arithterm",
+      "parameters": ["a", "b", "c", "d"],
+      "body": "= d + a * b c",
+      "area": "finite-sequences",
+      "summary": "Term d of an arithmetic progression with start a, difference b, index c.",
+      "theorem_families": ["arithmetic progression", "arithmetic series"]
+    },
+    {
+      "name": "geomterm",
+      "parameters": ["a", "b", "c", "d"],
+      "body": "exists x0 and pow b c x0 = d * a x0",
+      "area": "finite-sequences",
+      "summary": "Term d of a geometric progression with start a, ratio b, index c.",
+      "theorem_families": ["geometric progression", "geometric series"]
+    },
+    {
+      "name": "arithsum",
+      "parameters": ["a", "b", "c", "d"],
+      "body": "exists x0 exists x1 and seqsum x0 x1 c d forall x2 implies < x2 c exists x3 and seqat x0 x1 x2 x3 arithterm a b x2 x3",
+      "area": "finite-sequences",
+      "summary": "Finite arithmetic progression sum.",
+      "theorem_families": ["arithmetic series formula"]
+    },
+    {
+      "name": "geomseries",
+      "parameters": ["a", "b", "c", "d"],
+      "body": "exists x0 exists x1 and seqsum x0 x1 c d forall x2 implies < x2 c exists x3 and seqat x0 x1 x2 x3 geomterm a b x2 x3",
+      "area": "finite-sequences",
+      "summary": "Finite geometric progression sum.",
+      "theorem_families": ["geometric series formula"]
+    },
+    {
+      "name": "divisorcount",
+      "parameters": ["a", "b"],
+      "body": "and positive a exists x0 exists x1 and seqat x0 x1 0 0 and seqat x0 x1 a b forall x2 implies < x2 a exists x3 exists x4 and seqat x0 x1 x2 x3 and seqat x0 x1 S x2 x4 and implies divides S x2 a = x4 S x3 implies not divides S x2 a = x4 x3",
+      "area": "arithmetic-functions",
+      "summary": "Number of positive divisors of a.",
+      "theorem_families": ["divisor-count multiplicativity", "odd divisor count characterization"]
+    },
+    {
+      "name": "divisorsum",
+      "parameters": ["a", "b"],
+      "body": "and positive a exists x0 exists x1 and seqat x0 x1 0 0 and seqat x0 x1 a b forall x2 implies < x2 a exists x3 exists x4 and seqat x0 x1 x2 x3 and seqat x0 x1 S x2 x4 and implies divides S x2 a = x4 + x3 S x2 implies not divides S x2 a = x4 x3",
+      "area": "arithmetic-functions",
+      "summary": "Sum of positive divisors of a.",
+      "theorem_families": ["divisor-sum multiplicativity", "perfect numbers"]
+    },
+    {
+      "name": "eulerphi",
+      "parameters": ["a", "b"],
+      "body": "and positive a exists x0 exists x1 and seqat x0 x1 0 0 and seqat x0 x1 a b forall x2 implies < x2 a exists x3 exists x4 and seqat x0 x1 x2 x3 and seqat x0 x1 S x2 x4 and implies coprime S x2 a = x4 S x3 implies not coprime S x2 a = x4 x3",
+      "area": "arithmetic-functions",
+      "summary": "Euler totient count on residues one through a.",
+      "theorem_families": ["Euler theorem", "totient multiplicativity"]
+    },
+    {
+      "name": "perfectnumber",
+      "parameters": ["a"],
+      "body": "and positive a exists x0 and divisorsum a x0 = x0 + a a",
+      "area": "arithmetic-functions",
+      "summary": "Positive divisor sum equals twice the number.",
+      "theorem_families": ["Euclid-Euler perfect-number theorem"]
+    },
+    {
+      "name": "abundantnumber",
+      "parameters": ["a"],
+      "body": "and positive a exists x0 and divisorsum a x0 < + a a x0",
+      "area": "arithmetic-functions",
+      "summary": "Divisor sum exceeds twice the number.",
+      "theorem_families": ["abundant number closure"]
+    },
+    {
+      "name": "deficientnumber",
+      "parameters": ["a"],
+      "body": "and positive a exists x0 and divisorsum a x0 < x0 + a a",
+      "area": "arithmetic-functions",
+      "summary": "Divisor sum is below twice the number.",
+      "theorem_families": ["prime deficiency"]
+    },
+    {
+      "name": "inteq",
+      "parameters": ["a", "b", "c", "d"],
+      "body": "= + a d + c b",
+      "area": "signed-arithmetic",
+      "summary": "Equality of integer pairs a minus b and c minus d.",
+      "theorem_families": ["integer arithmetic", "Bezout identities"]
+    },
+    {
+      "name": "intle",
+      "parameters": ["a", "b", "c", "d"],
+      "body": "le + a d + c b",
+      "area": "signed-arithmetic",
+      "summary": "Order on integer pairs.",
+      "theorem_families": ["integer inequalities"]
+    },
+    {
+      "name": "intlt",
+      "parameters": ["a", "b", "c", "d"],
+      "body": "< + a d + c b",
+      "area": "signed-arithmetic",
+      "summary": "Strict order on integer pairs.",
+      "theorem_families": ["integer inequalities"]
+    },
+    {
+      "name": "intadd",
+      "parameters": ["a", "b", "c", "d", "e", "f"],
+      "body": "inteq e f + a c + b d",
+      "area": "signed-arithmetic",
+      "summary": "Addition graph for integer pairs.",
+      "theorem_families": ["integer ring laws"]
+    },
+    {
+      "name": "intmul",
+      "parameters": ["a", "b", "c", "d", "e", "f"],
+      "body": "inteq e f + * a c * b d + * a d * b c",
+      "area": "signed-arithmetic",
+      "summary": "Multiplication graph for integer pairs.",
+      "theorem_families": ["integer ring laws", "signed polynomial identities"]
+    },
+    {
+      "name": "intneg",
+      "parameters": ["a", "b", "c", "d"],
+      "body": "inteq c d b a",
+      "area": "signed-arithmetic",
+      "summary": "Negation graph for integer pairs.",
+      "theorem_families": ["integer ring laws"]
+    },
+    {
+      "name": "intabs",
+      "parameters": ["a", "b", "c"],
+      "body": "or = a + b c = b + a c",
+      "area": "signed-arithmetic",
+      "summary": "Natural absolute value of an integer pair.",
+      "theorem_families": ["triangle inequality", "absolute-value bounds"]
+    },
+    {
+      "name": "qvalid",
+      "parameters": ["a", "b", "c"],
+      "body": "positive c",
+      "allow_unused_parameters": ["a", "b"],
+      "area": "signed-rationals",
+      "summary": "Well-formed signed rational pair numerator over positive denominator.",
+      "theorem_families": ["rational field laws"]
+    },
+    {
+      "name": "qeq",
+      "parameters": ["a", "b", "c", "d", "e", "f"],
+      "body": "and positive c and positive f inteq * a f * b f * d c * e c",
+      "area": "signed-rationals",
+      "summary": "Equality of signed rationals (a-b)/c and (d-e)/f.",
+      "theorem_families": ["rational field laws", "normalization independence"]
+    },
+    {
+      "name": "qle",
+      "parameters": ["a", "b", "c", "d", "e", "f"],
+      "body": "and positive c and positive f intle * a f * b f * d c * e c",
+      "area": "signed-rationals",
+      "summary": "Order on signed rationals.",
+      "theorem_families": ["ordered field laws", "rational bounds"]
+    },
+    {
+      "name": "qlt",
+      "parameters": ["a", "b", "c", "d", "e", "f"],
+      "body": "and positive c and positive f intlt * a f * b f * d c * e c",
+      "area": "signed-rationals",
+      "summary": "Strict order on signed rationals.",
+      "theorem_families": ["ordered field laws", "epsilon bounds"]
+    },
+    {
+      "name": "qadd",
+      "parameters": ["a", "b", "c", "d", "e", "f", "g", "h", "i"],
+      "body": "and qvalid a b c and qvalid d e f and qvalid g h i qeq g h i + * a f * d c + * b f * e c * c f",
+      "area": "signed-rationals",
+      "summary": "Addition graph for signed rationals.",
+      "theorem_families": ["rational field laws", "finite rational sums"]
+    },
+    {
+      "name": "qmul",
+      "parameters": ["a", "b", "c", "d", "e", "f", "g", "h", "i"],
+      "body": "and qvalid a b c and qvalid d e f and qvalid g h i qeq g h i + * a d * b e + * a e * b d * c f",
+      "area": "signed-rationals",
+      "summary": "Multiplication graph for signed rationals.",
+      "theorem_families": ["rational field laws", "polynomial bounds"]
+    },
+    {
+      "name": "qneg",
+      "parameters": ["a", "b", "c", "d", "e", "f"],
+      "body": "qeq d e f b a c",
+      "area": "signed-rationals",
+      "summary": "Negation graph for signed rationals.",
+      "theorem_families": ["rational field laws"]
+    },
+    {
+      "name": "qabs",
+      "parameters": ["a", "b", "c", "d", "e"],
+      "body": "and positive e or and le b a qeq a b c d 0 e and le a b qeq b a c d 0 e",
+      "area": "signed-rationals",
+      "summary": "Nonnegative rational absolute value of a signed rational.",
+      "theorem_families": ["triangle inequality", "epsilon bounds"]
+    },
+    {
+      "name": "ratbetween",
+      "parameters": ["a", "b", "c", "d", "e", "f"],
+      "body": "and ratle c d a b ratle a b e f",
+      "area": "analysis-certificates",
+      "summary": "A nonnegative rational lies in a closed rational interval.",
+      "theorem_families": ["interval nesting", "bisection bounds"]
+    },
+    {
+      "name": "ratabsle",
+      "parameters": ["a", "b", "c", "d", "e", "f"],
+      "body": "and positive b and positive d and positive f and le * f * a d + * f * c b * e * b d le * f * c b + * f * a d * e * b d",
+      "area": "analysis-certificates",
+      "summary": "Absolute difference of two nonnegative rationals is at most e/f.",
+      "theorem_families": ["Cauchy estimates", "uniform error bounds"]
+    },
+    {
+      "name": "ratabslt",
+      "parameters": ["a", "b", "c", "d", "e", "f"],
+      "body": "and positive b and positive d and positive f and < * f * a d + * f * c b * e * b d < * f * c b + * f * a d * e * b d",
+      "area": "analysis-certificates",
+      "summary": "Absolute difference of two nonnegative rationals is below e/f.",
+      "theorem_families": ["epsilon estimates", "convergence certificates"]
+    },
+    {
+      "name": "sqrtlower",
+      "parameters": ["a", "b", "c"],
+      "body": "and positive c < * b b * a * c c",
+      "area": "analysis-certificates",
+      "summary": "b/c is a strict lower bound for the nonnegative square root of a.",
+      "theorem_families": ["square-root approximation", "irrationality"]
+    },
+    {
+      "name": "sqrtupper",
+      "parameters": ["a", "b", "c"],
+      "body": "and positive c < * a * c c * b b",
+      "area": "analysis-certificates",
+      "summary": "b/c is a strict upper bound for the nonnegative square root of a.",
+      "theorem_families": ["square-root approximation", "error bounds"]
+    },
+    {
+      "name": "sqrtinterval",
+      "parameters": ["a", "b", "c", "d", "e"],
+      "body": "and sqrtlower a b c sqrtupper a d e",
+      "area": "analysis-certificates",
+      "summary": "Rational interval enclosing the nonnegative square root of a.",
+      "theorem_families": ["bisection", "root convergence"]
+    },
+    {
+      "name": "nthrootlower",
+      "parameters": ["a", "b", "c", "d"],
+      "body": "and positive b and positive d exists x0 exists x1 and pow c b x0 and pow d b x1 < x0 * a x1",
+      "area": "analysis-certificates",
+      "summary": "c/d is a strict lower bound for the positive b-th root of a.",
+      "theorem_families": ["n-th-root approximation", "algebraic irrationality"]
+    },
+    {
+      "name": "nthrootupper",
+      "parameters": ["a", "b", "c", "d"],
+      "body": "and positive b and positive d exists x0 exists x1 and pow c b x0 and pow d b x1 < * a x1 x0",
+      "area": "analysis-certificates",
+      "summary": "c/d is a strict upper bound for the positive b-th root of a.",
+      "theorem_families": ["n-th-root approximation", "error bounds"]
+    },
+    {
+      "name": "nthrootexact",
+      "parameters": ["a", "b", "c", "d"],
+      "body": "and positive b and positive d exists x0 exists x1 and pow c b x0 and pow d b x1 = x0 * a x1",
+      "area": "analysis-certificates",
+      "summary": "c/d is exactly the positive b-th root of a.",
+      "theorem_families": ["rational-root criterion"]
+    }
+  ],
+  "statements": [
+    {
+      "name": "euclid-primes-statement",
+      "body": "forall x0 exists x1 and < x0 x1 prime x1",
+      "area": "number-theory",
+      "summary": "There are arbitrarily large primes.",
+      "requires": []
+    },
+    {
+      "name": "division-algorithm-statement",
+      "body": "forall x0 forall x1 implies positive x1 exists x2 exists x3 and = x0 + * x1 x2 x3 < x3 x1",
+      "area": "number-theory",
+      "summary": "Division with quotient and a smaller remainder.",
+      "requires": ["positive"]
+    },
+    {
+      "name": "gcd-existence-statement",
+      "body": "forall x0 forall x1 exists x2 gcdrel x0 x1 x2",
+      "area": "number-theory",
+      "summary": "Every pair of naturals has a greatest common divisor.",
+      "requires": ["gcdrel"]
+    },
+    {
+      "name": "lcm-existence-statement",
+      "body": "forall x0 forall x1 exists x2 lcmrel x0 x1 x2",
+      "area": "number-theory",
+      "summary": "Every pair of positive naturals has a least common multiple.",
+      "requires": ["lcmrel"]
+    },
+    {
+      "name": "gcd-lcm-product-statement",
+      "body": "forall x0 forall x1 forall x2 forall x3 implies and gcdrel x0 x1 x2 lcmrel x0 x1 x3 = * x2 x3 * x0 x1",
+      "area": "number-theory",
+      "summary": "The product of gcd and lcm equals the product of the inputs.",
+      "requires": ["gcdrel", "lcmrel"]
+    },
+    {
+      "name": "prime-divisor-statement",
+      "body": "forall x0 implies < S 0 x0 exists x1 and prime x1 divides x1 x0",
+      "area": "number-theory",
+      "summary": "Every natural above one has a prime divisor.",
+      "requires": []
+    },
+    {
+      "name": "bezout-coprime-statement",
+      "body": "forall x0 forall x1 implies coprime x0 x1 exists x2 exists x3 exists x4 exists x5 inteq + * x0 x2 * x1 x4 + * x0 x3 * x1 x5 S 0 0",
+      "area": "number-theory",
+      "summary": "Coprime naturals admit a signed Bezout identity.",
+      "requires": ["coprime", "inteq"]
+    },
+    {
+      "name": "crt-two-moduli-statement",
+      "body": "forall x0 forall x1 forall x2 forall x3 implies and positive x2 and positive x3 coprime x2 x3 exists x4 and congruent x4 x0 x2 congruent x4 x1 x3",
+      "area": "number-theory",
+      "summary": "Chinese remainder theorem for two coprime moduli.",
+      "requires": ["positive", "coprime", "congruent"]
+    },
+    {
+      "name": "fermat-little-statement",
+      "body": "forall x0 forall x1 implies prime x1 exists x2 and pow x0 x1 x2 congruent x2 x0 x1",
+      "area": "number-theory",
+      "summary": "Fermat's little theorem in a^p congruent a form.",
+      "requires": ["congruent"]
+    },
+    {
+      "name": "euler-theorem-statement",
+      "body": "forall x0 forall x1 forall x2 implies and positive x1 and coprime x0 x1 eulerphi x1 x2 exists x3 and pow x0 x2 x3 congruent x3 S 0 x1",
+      "area": "number-theory",
+      "summary": "Euler's theorem for coprime base and modulus.",
+      "requires": ["positive", "coprime", "eulerphi", "congruent"]
+    },
+    {
+      "name": "wilson-statement",
+      "body": "forall x0 implies prime x0 exists x1 exists x2 and natdiff x0 S 0 x1 and factorial x1 x2 congruent x2 x1 x0",
+      "area": "number-theory",
+      "summary": "Wilson's theorem: (p-1)! is congruent to -1 modulo p.",
+      "requires": ["natdiff", "factorial", "congruent"]
+    },
+    {
+      "name": "fermat-two-squares-statement",
+      "body": "forall x0 implies and prime x0 congruent x0 S 0 S S S S 0 sumtwosquares x0",
+      "area": "number-theory",
+      "summary": "A prime congruent to one modulo four is a sum of two squares.",
+      "requires": ["congruent", "sumtwosquares"]
+    },
+    {
+      "name": "lagrange-four-squares-statement",
+      "body": "forall x0 sumfoursquares x0",
+      "area": "number-theory",
+      "summary": "Every natural is a sum of four squares.",
+      "requires": ["sumfoursquares"]
+    },
+    {
+      "name": "pell-existence-statement",
+      "body": "forall x0 implies and positive x0 not square x0 exists x1 exists x2 and positive x2 pellsolution x0 x1 x2",
+      "area": "number-theory",
+      "summary": "Every positive nonsquare parameter has a nontrivial Pell solution.",
+      "requires": ["positive", "square", "pellsolution"]
+    },
+    {
+      "name": "squarefree-divisor-statement",
+      "body": "forall x0 exists x1 exists x2 and squarefree x1 and square x2 = x0 * x1 x2",
+      "area": "number-theory",
+      "summary": "Every natural has a squarefree-times-square decomposition.",
+      "requires": ["squarefree", "square"]
+    },
+    {
+      "name": "order-divides-phi-statement",
+      "body": "forall x0 forall x1 forall x2 forall x3 implies and multiplicativeorder x0 x1 x2 eulerphi x1 x3 divides x2 x3",
+      "area": "number-theory",
+      "summary": "Multiplicative order divides Euler's totient.",
+      "requires": ["multiplicativeorder", "eulerphi"]
+    },
+    {
+      "name": "divisorcount-square-statement",
+      "body": "forall x0 forall x1 implies and positive x0 divisorcount x0 x1 iff even x1 not square x0",
+      "area": "arithmetic-functions",
+      "summary": "The divisor count is odd exactly for squares.",
+      "requires": ["positive", "divisorcount", "square"]
+    },
+    {
+      "name": "prime-deficient-statement",
+      "body": "forall x0 implies prime x0 deficientnumber x0",
+      "area": "arithmetic-functions",
+      "summary": "Every prime is deficient.",
+      "requires": ["deficientnumber"]
+    },
+    {
+      "name": "euclid-even-perfect-statement",
+      "body": "forall x0 forall x1 implies and prime x1 mersenne x1 x0 exists x2 exists x3 exists x4 and natdiff x0 S 0 x3 and pow S S 0 x3 x4 and = x2 * x4 x1 perfectnumber x2",
+      "area": "arithmetic-functions",
+      "summary": "The Euclid construction from a Mersenne prime yields an even perfect number.",
+      "requires": ["natdiff", "mersenne", "perfectnumber"]
+    },
+    {
+      "name": "factorial-zero-statement",
+      "body": "factorial 0 S 0",
+      "area": "finite-sequences",
+      "summary": "Zero factorial equals one.",
+      "requires": ["factorial"]
+    },
+    {
+      "name": "factorial-step-statement",
+      "body": "forall x0 forall x1 forall x2 implies and factorial x0 x1 factorial S x0 x2 = x2 * S x0 x1",
+      "area": "finite-sequences",
+      "summary": "Factorial recurrence.",
+      "requires": ["factorial"]
+    },
+    {
+      "name": "fibonacci-step-statement",
+      "body": "forall x0 forall x1 forall x2 forall x3 implies and fibonacci x0 x1 and fibonacci S x0 x2 fibonacci S S x0 x3 = x3 + x1 x2",
+      "area": "finite-sequences",
+      "summary": "Fibonacci recurrence.",
+      "requires": ["fibonacci"]
+    },
+    {
+      "name": "binomial-symmetry-statement",
+      "body": "forall x0 forall x1 forall x2 forall x3 forall x4 implies and natdiff x0 x1 x2 and binomial x0 x1 x3 binomial x0 x2 x4 = x3 x4",
+      "area": "finite-sequences",
+      "summary": "Binomial coefficient symmetry.",
+      "requires": ["natdiff", "binomial"]
+    },
+    {
+      "name": "pascal-statement",
+      "body": "forall x0 forall x1 forall x2 forall x3 forall x4 implies and positive x1 and binomial x0 x1 x2 and binomial x0 x3 x4 natdiff x1 S 0 x3 exists x5 and binomial S x0 x1 x5 = x5 + x2 x4",
+      "area": "finite-sequences",
+      "summary": "Pascal's binomial recurrence.",
+      "requires": ["positive", "natdiff", "binomial"]
+    },
+    {
+      "name": "arithmetic-series-statement",
+      "body": "forall x0 forall x1 forall x2 forall x3 implies and positive x2 arithsum x0 x1 x2 x3 exists x4 and natdiff x2 S 0 x4 = * S S 0 x3 * x2 + * S S 0 x0 * x1 x4",
+      "area": "finite-sequences",
+      "summary": "Twice an arithmetic sum equals n times twice the start plus (n-1)d.",
+      "requires": ["positive", "natdiff", "arithsum"]
+    },
+    {
+      "name": "geometric-series-statement",
+      "body": "forall x0 forall x1 forall x2 forall x3 forall x4 implies and geomseries x0 x1 x2 x3 pow x1 x2 x4 = + * x3 x1 x0 + x3 * x0 x4",
+      "area": "finite-sequences",
+      "summary": "Cross-multiplied finite geometric series identity.",
+      "requires": ["geomseries"]
+    },
+    {
+      "name": "integer-triangle-statement",
+      "body": "forall x0 forall x1 forall x2 forall x3 forall x4 forall x5 forall x6 implies and intabs x0 x1 x4 and intabs x2 x3 x5 intabs + x0 x2 + x1 x3 x6 le x6 + x4 x5",
+      "area": "signed-arithmetic",
+      "summary": "Triangle inequality for integer-pair absolute value.",
+      "requires": ["intabs"]
+    },
+    {
+      "name": "rational-density-statement",
+      "body": "forall x0 forall x1 forall x2 forall x3 forall x4 forall x5 implies qlt x0 x1 x2 x3 x4 x5 exists x6 exists x7 exists x8 and qlt x0 x1 x2 x6 x7 x8 qlt x6 x7 x8 x3 x4 x5",
+      "area": "signed-rationals",
+      "summary": "A signed rational lies strictly between any two distinct signed rationals.",
+      "requires": ["qlt"]
+    },
+    {
+      "name": "rational-triangle-statement",
+      "body": "forall x0 forall x1 forall x2 forall x3 forall x4 forall x5 forall x6 forall x7 forall x8 forall x9 forall x10 forall x11 forall x12 forall x13 forall x14 implies and qadd x0 x1 x2 x3 x4 x5 x6 x7 x8 and qabs x0 x1 x2 x9 x10 and qabs x3 x4 x5 x11 x12 qabs x6 x7 x8 x13 x14 ratle x13 x14 + * x9 x12 * x11 x10 * x10 x12",
+      "area": "signed-rationals",
+      "summary": "Triangle inequality for signed rationals.",
+      "requires": ["qabs", "qadd"]
+    },
+    {
+      "name": "archimedean-statement",
+      "body": "forall x0 forall x1 implies positive x1 exists x2 < x0 * x1 x2",
+      "area": "analysis-certificates",
+      "summary": "Archimedean bound in natural cross-multiplied form.",
+      "requires": ["positive"]
+    },
+    {
+      "name": "sqrt-rational-cell-statement",
+      "body": "forall x0 forall x1 implies and positive x0 positive x1 exists x2 exists x3 sqrtinterval x0 x2 x1 x3 x1",
+      "area": "analysis-certificates",
+      "summary": "Every positive square root is bracketed by rational endpoints of a fixed positive denominator.",
+      "requires": ["positive", "sqrtinterval"]
+    },
+    {
+      "name": "sqrt-prime-irrational-statement",
+      "body": "forall x0 forall x1 forall x2 implies and prime x0 and positive x2 coprime x1 x2 not = * x1 x1 * x0 * x2 x2",
+      "area": "analysis-certificates",
+      "summary": "The square root of a prime has no reduced rational representation.",
+      "requires": ["positive", "coprime"]
+    },
+    {
+      "name": "nthroot-rational-criterion-statement",
+      "body": "forall x0 forall x1 forall x2 forall x3 implies and nthrootexact x0 x1 x2 x3 coprime x2 x3 = x3 S 0",
+      "area": "analysis-certificates",
+      "summary": "A reduced rational whose positive power is a natural has denominator one.",
+      "requires": ["coprime", "nthrootexact"]
+    },
+    {
+      "name": "sqrt-interval-order-statement",
+      "body": "forall x0 forall x1 forall x2 forall x3 forall x4 implies sqrtinterval x0 x1 x2 x3 x4 ratlt x1 x2 x3 x4",
+      "area": "analysis-certificates",
+      "summary": "A strict square-root interval has its lower endpoint below its upper endpoint.",
+      "requires": ["sqrtinterval"]
+    },
+    {
+      "name": "absolute-error-monotone-statement",
+      "body": "forall x0 forall x1 forall x2 forall x3 forall x4 forall x5 forall x6 forall x7 implies and ratabsle x0 x1 x2 x3 x4 x5 ratle x4 x5 x6 x7 ratabsle x0 x1 x2 x3 x6 x7",
+      "area": "analysis-certificates",
+      "summary": "An absolute-error certificate remains valid under a larger tolerance.",
+      "requires": ["ratabsle"]
+    }
+  ]
+}

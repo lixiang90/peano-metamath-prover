@@ -74,7 +74,7 @@ Beta：神经网络和搜索器只能提出候选动作，成功证明必须能�
 ## 项目结构
 
 ```text
-formal/                  peano.mm 与保守数论定义
+formal/                  peano.mm、保守数论定义与生成式 PA+ 目录
 src/metamath_generator/  解析、合一、组合、质量控制与数据导出
 src/neural_prover/       Transformer、MCTS、Scale 数据和训练
 src/htps_prover/         forward DAG、HTPS、latent 训练与在线闭环
@@ -261,6 +261,11 @@ Beam/MCTS 探索、执行与回溯
 有理数不等式和对数/Li 的有限证书。费马大定理、哥德巴赫猜想、素数定理及
 黎曼猜想的 von Koch 等价形式使用 `statement` 类型命名，既不是公理，也
 不是已证明定理；开放猜想永不作为训练成功标签。
+
+`formal/peano-pa-plus.mm` 在其上增加由 JSON 目录机械生成的 68 个高层定义和
+35 个闭合目标公式。编译器自动生成 `$d` 条件并拒绝自由变量泄漏、递归或前向
+定义依赖；具体接口和重新生成命令见
+[PA+ 分层定义库与生成接口](docs/pa-plus-definitions.md)。
 
 ## 可信边界
 

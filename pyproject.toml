@@ -27,13 +27,14 @@ dev = ["pytest>=8"]
 metamath-generate = "metamath_generator.cli:main"
 peano-neural-prover = "neural_prover.cli:main"
 peano-htps = "htps_prover.cli:main"
+pa-plus-compile = "metamath_generator.definitions:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["metamath_generator*", "neural_prover*", "htps_prover*"]
 
 [tool.setuptools.data-files]
-"share/peano-metamath-prover-htps/formal" = ["formal/*.mm"]
+"share/peano-metamath-prover-htps/formal" = ["formal/*.mm", "formal/*.json"]
 "share/peano-metamath-prover-htps/docs" = ["docs/*.md"]
 
 [tool.pytest.ini_options]
