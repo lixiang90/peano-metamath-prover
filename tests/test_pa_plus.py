@@ -197,14 +197,18 @@ class PaPlusDefinitionTests(unittest.TestCase):
         generator = TheoremGenerator(
             self.extension,
             GenerationConfig(
-                bootstrap_definitions=True,
                 focus_predicates=("positive",),
+                bounded_nat_max=2,
+                ground_instances_per_predicate=1,
             ),
         )
         generated = generator.generate("random", 0)
+        instance = next(
+            theorem for theorem in generated if "bounded" in theorem.name
+        )
         with tempfile.TemporaryDirectory() as directory:
             fragment = Path(directory) / "generated.mm"
-            export_metamath(generated[-1], generator.store, fragment)
+            export_metamath(instance, generator.store, fragment)
             parser = MetamathParser()
             expanded = " ".join(parser._tokens_with_includes(EXTENSION, set()))
             combined = parser.parse_text(
@@ -215,8 +219,129 @@ class PaPlusDefinitionTests(unittest.TestCase):
                 for theorem in combined.proved_theorems.values()
                 if theorem.name.startswith("gen")
             ]
-            self.assertEqual(len(replayed), 1)
-            verify(replayed[0], combined)
+            self.assertEqual(len(replayed), 2)
+            for theorem in replayed:
+                verify(theorem, combined)
+
+    def test_bounded_instances_are_canonical_and_targets_stay_nonlogical(
+        self,
+    ) -> None:
+        focus = ("positive", "multiplicativeorder", "binomial")
+        generator = TheoremGenerator(
+            self.extension,
+            GenerationConfig(
+                seed=7,
+                focus_predicates=focus,
+                bounded_nat_max=2,
+                ground_instances_per_predicate=1,
+                target_statements=self.catalog.statement_names,
+                target_guidance_weight=4.0,
+            ),
+        )
+        generated = generator.generate("random", 0)
+        bounded = [
+            theorem for theorem in generated if "bounded" in theorem.name
+        ]
+        self.assertEqual(len(bounded), 2 * len(focus))
+
+        def is_numeral(node) -> bool:
+            return node.op == "0" or (
+                node.op == "S"
+                and len(node.args) == 1
+                and is_numeral(node.args[0])
+            )
+
+        for theorem in bounded:
+            self.assertNotIn("term", theorem.variable_types.values())
+            predicate = next(
+                name for name in focus if name in theorem.name
+            )
+            occurrence = next(
+                node for node in theorem.conclusion.walk()
+                if node.op == predicate
+            )
+            self.assertTrue(all(is_numeral(arg) for arg in occurrence.args))
+        summary = generator.summary()
+        self.assertEqual(summary.bounded_ground_instances, len(bounded))
+        self.assertEqual(summary.search_stored, 0)
+        self.assertEqual(summary.target_statements_total, 35)
+        self.assertFalse(
+            set(self.catalog.statement_names)
+            & set(generator.parsed.logical_assertions)
+        )
+
+    def test_bounded_instances_enumerate_unique_assignments(self) -> None:
+        generator = TheoremGenerator(
+            self.extension,
+            GenerationConfig(
+                focus_predicates=("positive",),
+                bounded_nat_max=2,
+                ground_instances_per_predicate=4,
+            ),
+        )
+        generated = generator.generate("random", 0)
+        bounded = [
+            theorem for theorem in generated if "bounded" in theorem.name
+        ]
+        # positive has one term parameter, so 0..2 gives three assignments
+        # per direction even though the requested cap is four.
+        self.assertEqual(len(bounded), 6)
+        self.assertEqual(len({theorem.conclusion for theorem in bounded}), 6)
+
+    def test_backward_guidance_improves_target_similarity(self) -> None:
+        common = dict(
+            seed=7,
+            max_proof_depth=8,
+            focus_predicates=self.catalog.definition_names,
+            bootstrap_definitions=True,
+            bounded_nat_max=2,
+            ground_instances_per_predicate=1,
+            target_statements=self.catalog.statement_names,
+            definition_coverage_weight=3.0,
+        )
+        unguided = TheoremGenerator(
+            self.extension,
+            GenerationConfig(**common),
+        )
+        unguided.generate("random", 150)
+        guided = TheoremGenerator(
+            self.extension,
+            GenerationConfig(**common, target_guidance_weight=4.0),
+        )
+        guided.generate("random", 150)
+        unguided_summary = unguided.summary()
+        guided_summary = guided.summary()
+        self.assertGreater(
+            guided_summary.target_mean_best_similarity,
+            unguided_summary.target_mean_best_similarity,
+        )
+        self.assertGreater(
+            guided_summary.target_statements_touched,
+            unguided_summary.target_statements_touched,
+        )
+
+    def test_definition_only_search_quota_does_not_remove_bootstraps(
+        self,
+    ) -> None:
+        generator = TheoremGenerator(
+            self.extension,
+            GenerationConfig(
+                seed=7,
+                focus_predicates=("positive",),
+                bounded_nat_max=2,
+                ground_instances_per_predicate=1,
+                max_definition_only_search_per_predicate=0,
+            ),
+        )
+        generator.generate("random", 200)
+        summary = generator.summary()
+        self.assertEqual(summary.definition_bridges, 2)
+        self.assertEqual(summary.bounded_ground_instances, 2)
+        self.assertEqual(summary.definition_only_search_admitted, 0)
+        self.assertGreater(
+            summary.rejected.get("definition_only_search_quota", 0),
+            0,
+        )
 
     def test_guided_random_pa_plus_dag_exports_and_replays(self) -> None:
         focus = ("positive", "multiplicativeorder", "binomial")

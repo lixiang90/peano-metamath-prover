@@ -137,13 +137,16 @@ python -m metamath_generator formal/peano.mm \
   --output-dir outputs/generated
 ```
 
-对扩展 PA+ 目录启用定义展开/折叠桥、结构兼容采样和覆盖均衡：
+对扩展 PA+ 目录启用定义桥、小自然数闭式实例、35目标反向引导和定义包装限流：
 
 ```bash
 python -m metamath_generator formal/peano-pa-plus.mm \
   --mode random --steps 5000 --seed 7 \
   --definition-catalog formal/pa-plus-definitions.json \
   --bootstrap-definitions --definition-coverage-weight 3 \
+  --bounded-nat-max 2 --ground-instances-per-predicate 1 \
+  --target-guidance-weight 4 \
+  --max-definition-only-search-per-predicate 1 \
   --output-dir outputs/pa-plus-guided
 ```
 

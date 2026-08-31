@@ -6,7 +6,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Literal
 
-from .compose import CompositionError, compose
+from .compose import CompositionError, compose, instantiate_assertion
 from .database import TheoremDatabase
 from ._engine import Generator as _CompositionEngine
 from ._engine import GeneratorConfig as _EngineConfig
@@ -44,6 +44,11 @@ class GenerationConfig(_EngineConfig):
     definition_coverage_weight: float = 0.0
     compatible_candidate_filter: bool = True
     max_joint_candidate_attempts: int = 8
+    bounded_nat_max: int = -1
+    ground_instances_per_predicate: int = 0
+    target_statements: tuple[str, ...] = ()
+    target_guidance_weight: float = 0.0
+    max_definition_only_search_per_predicate: int = -1
 
 
 @dataclass(slots=True)
@@ -60,7 +65,13 @@ class GenerationSummary:
     definition_coverage: float
     definition_usage: dict[str, int]
     definition_bridges: int
+    bounded_ground_instances: int
     search_stored: int
+    target_statements_total: int
+    target_statements_touched: int
+    target_mean_best_similarity: float
+    target_best_similarity: dict[str, float]
+    definition_only_search_admitted: int
 
 
 class TheoremGenerator(_CompositionEngine):
@@ -84,6 +95,25 @@ class TheoremGenerator(_CompositionEngine):
             raise ValueError("definition_coverage_weight must be non-negative")
         if self.config.max_joint_candidate_attempts <= 0:
             raise ValueError("max_joint_candidate_attempts must be positive")
+        if self.config.bounded_nat_max < -1:
+            raise ValueError("bounded_nat_max must be at least -1")
+        if self.config.ground_instances_per_predicate < 0:
+            raise ValueError(
+                "ground_instances_per_predicate must be non-negative"
+            )
+        if (
+            self.config.ground_instances_per_predicate > 0
+            and self.config.bounded_nat_max < 0
+        ):
+            raise ValueError(
+                "bounded_nat_max must be non-negative when instances are enabled"
+            )
+        if self.config.target_guidance_weight < 0:
+            raise ValueError("target_guidance_weight must be non-negative")
+        if self.config.max_definition_only_search_per_predicate < -1:
+            raise ValueError(
+                "max_definition_only_search_per_predicate must be at least -1"
+            )
         self.analyzer = QualityAnalyzer(parsed, self.config.quality)
         self.assessments: dict[int, QualityAssessment] = {}
         self.profiles: dict[int, SemanticProfile] = {}
@@ -111,7 +141,34 @@ class TheoremGenerator(_CompositionEngine):
         )
         self._focus_set = frozenset(self.focus_predicates)
         self._definition_usage: Counter[str] = Counter()
+        self._definition_support: dict[int, frozenset[str]] = {}
+        self._definition_only_search: Counter[str] = Counter()
+        self._admission_context = "search"
         self._definitions_bootstrapped = False
+        self._bounded_instances_bootstrapped = False
+        self._definition_bridges: dict[str, list[int]] = defaultdict(list)
+        self._bootstrap_ids: set[int] = set()
+        self.target_formulas = self._load_target_formulas(
+            parsed,
+            self.config.target_statements,
+        )
+        self._target_signatures = {
+            name: self._subformula_signatures(formula)
+            for name, formula in self.target_formulas.items()
+        }
+        self._target_required_predicates = {
+            name: frozenset(
+                node.op for node in formula.walk()
+                if node.op in self._focus_set
+            )
+            for name, formula in self.target_formulas.items()
+        }
+        self._target_selection: Counter[str] = Counter()
+        self._target_best_similarity: dict[str, float] = {
+            name: 0.0 for name in self.target_formulas
+        }
+        self._target_report_cache: dict[str, float] | None = None
+        self._current_target: str | None = None
         self.stats: Counter[str] = Counter()
         self.rejected: Counter[str] = Counter()
         self.rule_usage: Counter[str] = Counter()
@@ -131,6 +188,12 @@ class TheoremGenerator(_CompositionEngine):
             self.active_ids.add(theorem_id)
             self._semantic_to_id.setdefault(profile.full_key, theorem_id)
             self._by_conclusion[profile.conclusion_key].add(theorem_id)
+            support = frozenset(
+                predicate
+                for predicate, definition in self._definition_sources.items()
+                if definition.name == theorem.name
+            )
+            self._definition_support[theorem_id] = support
 
     @staticmethod
     def _find_definition_sources(parsed: Database) -> dict[str, Theorem]:
@@ -150,12 +213,68 @@ class TheoremGenerator(_CompositionEngine):
         return definitions
 
     @staticmethod
+    def _load_target_formulas(
+        parsed: Database,
+        names: tuple[str, ...],
+    ) -> dict[str, Node]:
+        targets: dict[str, Node] = {}
+        for name in dict.fromkeys(names):
+            theorem = parsed.syntax_statements.get(name)
+            if (
+                theorem is None
+                or theorem.conclusion.op != "statement"
+                or len(theorem.conclusion.args) != 1
+            ):
+                raise ValueError(
+                    f"target guidance requires non-logical statement {name!r}"
+                )
+            if name in parsed.logical_assertions:
+                raise ValueError(f"target {name!r} is a logical assertion")
+            targets[name] = theorem.conclusion.args[0]
+        return targets
+
+    def _fixed_symbols(self, node: Node) -> frozenset[str]:
+        return frozenset(
+            item.op for item in node.walk()
+            if item.op not in self.parsed.variable_types
+            and item.op not in {"|-", "statement"}
+        )
+
+    def _subformula_signatures(
+        self,
+        formula: Node,
+    ) -> tuple[frozenset[str], ...]:
+        signatures = {
+            self._fixed_symbols(node)
+            for node in formula.walk()
+            if node.args
+        }
+        signatures.discard(frozenset())
+        return tuple(
+            sorted(signatures, key=lambda item: (len(item), sorted(item)))
+        )
+
+    @staticmethod
     def _subsumes(left: SemanticProfile, right: SemanticProfile) -> bool:
         return (
             left.conclusion_key == right.conclusion_key
             and left.premise_keys <= right.premise_keys
             and left.d_constraints <= right.d_constraints
         )
+
+    def _proof_definition_support(self, theorem: Theorem) -> frozenset[str]:
+        if theorem.proof is None:
+            return frozenset()
+        support: set[str] = set()
+        for parent_id in theorem.proof.parents:
+            support.update(self._definition_support.get(parent_id, ()))
+        source_rule = self.parsed.logical_assertions.get(theorem.proof.rule)
+        if source_rule is not None:
+            for predicate, definition in self._definition_sources.items():
+                if definition.name == source_rule.name:
+                    support.add(predicate)
+                    break
+        return frozenset(support)
 
     def _alpha_chain(self, theorem_id: int) -> int:
         if theorem_id in self._alpha_chain_cache:
@@ -206,6 +325,12 @@ class TheoremGenerator(_CompositionEngine):
 
     def _admit(self, theorem: Theorem) -> bool:
         assessment, profile = self.analyzer.assess(theorem)
+        definition_support = self._proof_definition_support(theorem)
+        definition_only_predicate = (
+            next(iter(definition_support))
+            if len(definition_support) == 1
+            else None
+        )
         if assessment.hard_reject:
             if assessment.vacuous_quantifiers:
                 self.rejected["vacuous_quantifier"] += 1
@@ -217,6 +342,21 @@ class TheoremGenerator(_CompositionEngine):
             return False
         if profile.full_key in self._semantic_to_id:
             self.rejected["semantic_duplicate"] += 1
+            return False
+        definition_only_quota = (
+            self.config.max_definition_only_search_per_predicate
+        )
+        if (
+            self._admission_context == "search"
+            and definition_only_quota >= 0
+            and definition_only_predicate is not None
+            and definition_only_predicate in {
+                node.op for node in theorem.conclusion.walk()
+            }
+            and self._definition_only_search[definition_only_predicate]
+            >= definition_only_quota
+        ):
+            self.rejected["definition_only_search_quota"] += 1
             return False
         if (
             assessment.category == "proof_states"
@@ -247,6 +387,8 @@ class TheoremGenerator(_CompositionEngine):
         self._semantic_to_id[profile.full_key] = theorem_id
         self._by_conclusion[profile.conclusion_key].add(theorem_id)
         self._new_ids.append(theorem_id)
+        self._definition_support[theorem_id] = definition_support
+        self._target_report_cache = None
         self.stats["stored"] += 1
         self.rule_usage[stored.proof.rule if stored.proof else stored.name] += 1
         used_definitions = {
@@ -254,6 +396,24 @@ class TheoremGenerator(_CompositionEngine):
             if node.op in self._focus_set
         }
         self._definition_usage.update(used_definitions)
+        if (
+            self._admission_context == "search"
+            and definition_only_predicate is not None
+            and definition_only_predicate in used_definitions
+        ):
+            self._definition_only_search[definition_only_predicate] += 1
+            self.stats["definition_only_search_admitted"] += 1
+        if self._current_target is not None:
+            similarity = self._target_similarity(
+                stored,
+                self._current_target,
+            )
+            self._target_best_similarity[self._current_target] = max(
+                self._target_best_similarity[self._current_target],
+                similarity,
+            )
+            if similarity > 0:
+                self.stats["target_guided_admissions"] += 1
 
         for existing_id in comparable:
             if existing_id in self.source_ids:
@@ -354,6 +514,39 @@ class TheoremGenerator(_CompositionEngine):
             return self.config.alpha_rule_weight
         return self.config.default_rule_weight
 
+    def _choose_target(self) -> str | None:
+        if not self.target_formulas or self.config.target_guidance_weight <= 0:
+            return None
+        names = list(self.target_formulas)
+        chosen = self.random.choices(
+            names,
+            weights=[
+                1.0 / math.sqrt(1.0 + self._target_selection[name])
+                for name in names
+            ],
+            k=1,
+        )[0]
+        self._target_selection[chosen] += 1
+        return chosen
+
+    def _target_similarity(self, theorem: Theorem, target: str) -> float:
+        symbols = self._fixed_symbols(theorem.conclusion)
+        if not symbols:
+            return 0.0
+        structural = max(
+            (
+                len(symbols & signature) / len(symbols | signature)
+                for signature in self._target_signatures[target]
+                if symbols | signature
+            ),
+            default=0.0,
+        )
+        required = self._target_required_predicates[target]
+        if not required:
+            return structural
+        predicate_recall = len(symbols & required) / len(required)
+        return 0.65 * structural + 0.35 * predicate_recall
+
     def _choose_rule(self) -> Theorem:
         return self.random.choices(
             self.rules,
@@ -389,10 +582,21 @@ class TheoremGenerator(_CompositionEngine):
             )
         else:
             coverage_bonus = 1.0
+        if (
+            self._current_target is not None
+            and self.config.target_guidance_weight > 0
+        ):
+            target_bonus = 1.0 + (
+                self.config.target_guidance_weight
+                * self._target_similarity(theorem, self._current_target)
+            )
+        else:
+            target_bonus = 1.0
         return (
             (closed_bonus + quality_bonus)
             * depth_bonus
             * coverage_bonus
+            * target_bonus
             / reuse_penalty
         )
 
@@ -493,27 +697,139 @@ class TheoremGenerator(_CompositionEngine):
             self.rejected["definition_bootstrap_unavailable"] += 1
             return []
 
-        for predicate in self.focus_predicates:
-            definition = self._definition_sources[predicate]
-            for direction, bridge in directions:
-                self.stats["definition_bootstrap_attempts"] += 1
-                try:
-                    theorem = compose(
-                        ax_mp,
-                        [definition, bridge],
-                        name=f"gen{len(self.store)}_df_{predicate}_{direction}",
-                        database=self.parsed,
+        previous_context = self._admission_context
+        self._admission_context = "definition_bridge"
+        try:
+            for predicate in self.focus_predicates:
+                definition = self._definition_sources[predicate]
+                for direction, bridge in directions:
+                    self.stats["definition_bootstrap_attempts"] += 1
+                    try:
+                        theorem = compose(
+                            ax_mp,
+                            [definition, bridge],
+                            name=(
+                                f"gen{len(self.store)}_df_"
+                                f"{predicate}_{direction}"
+                            ),
+                            database=self.parsed,
+                        )
+                    except CompositionError:
+                        self.rejected[
+                            "definition_bootstrap_composition_failed"
+                        ] += 1
+                        continue
+                    if not self._valid(theorem):
+                        self.rejected[
+                            "definition_bootstrap_structural_limit"
+                        ] += 1
+                        continue
+                    if self._admit(theorem):
+                        self.stats["definition_bridges"] += 1
+                        self._definition_bridges[predicate].append(
+                            self._new_ids[-1]
+                        )
+                        self._bootstrap_ids.add(self._new_ids[-1])
+                    else:
+                        self.rejected[
+                            "definition_bootstrap_not_admitted"
+                        ] += 1
+        finally:
+            self._admission_context = previous_context
+        return [self.store[item] for item in self._new_ids[start_index:]]
+
+    @staticmethod
+    def _numeral(value: int) -> Node:
+        result = Node("0")
+        for _ in range(value):
+            result = Node("S", (result,))
+        return result
+
+    def bootstrap_bounded_term_instances(self) -> list[Theorem]:
+        """Instantiate definition parameters with canonical bounded numerals."""
+
+        start_index = len(self._new_ids)
+        if self._bounded_instances_bootstrapped:
+            return []
+        self._bounded_instances_bootstrapped = True
+        count = self.config.ground_instances_per_predicate
+        if count <= 0:
+            return []
+        if not self._definitions_bootstrapped:
+            self.bootstrap_definition_directions()
+        terms = tuple(
+            self._numeral(value)
+            for value in range(self.config.bounded_nat_max + 1)
+        )
+        previous_context = self._admission_context
+        self._admission_context = "bounded_instance"
+        try:
+            for predicate_index, predicate in enumerate(self.focus_predicates):
+                for bridge_id in self._definition_bridges.get(predicate, ()):
+                    bridge = self.store[bridge_id]
+                    occurrence = next(
+                        (
+                            node for node in bridge.conclusion.walk()
+                            if node.op == predicate
+                        ),
+                        None,
                     )
-                except CompositionError:
-                    self.rejected["definition_bootstrap_composition_failed"] += 1
-                    continue
-                if not self._valid(theorem):
-                    self.rejected["definition_bootstrap_structural_limit"] += 1
-                    continue
-                if self._admit(theorem):
-                    self.stats["definition_bridges"] += 1
-                else:
-                    self.rejected["definition_bootstrap_not_admitted"] += 1
+                    if occurrence is None:
+                        self.rejected[
+                            "bounded_instance_missing_predicate"
+                        ] += 1
+                        continue
+                    parameters = [
+                        argument.op
+                        for argument in occurrence.args
+                        if not argument.args
+                        and bridge.variable_types.get(argument.op) == "term"
+                    ]
+                    assignments = list(
+                        itertools.product(terms, repeat=len(parameters))
+                    )
+                    if not assignments:
+                        continue
+                    start = predicate_index % len(assignments)
+                    selected_assignments = [
+                        assignments[(start + index) % len(assignments)]
+                        for index in range(min(count, len(assignments)))
+                    ]
+                    for instance_index, assignment in enumerate(
+                        selected_assignments
+                    ):
+                        substitution = dict(zip(parameters, assignment))
+                        self.stats["bounded_instance_attempts"] += 1
+                        try:
+                            theorem = instantiate_assertion(
+                                bridge,
+                                substitution,
+                                name=(
+                                    f"gen{len(self.store)}_{predicate}_"
+                                    f"bounded_{instance_index}_"
+                                    f"{bridge.name.rsplit('_', 1)[-1]}"
+                                ),
+                                database=self.parsed,
+                            )
+                        except CompositionError:
+                            self.rejected[
+                                "bounded_instance_composition_failed"
+                            ] += 1
+                            continue
+                        if not self._valid(theorem):
+                            self.rejected[
+                                "bounded_instance_structural_limit"
+                            ] += 1
+                            continue
+                        if self._admit(theorem):
+                            self.stats["bounded_ground_instances"] += 1
+                            self._bootstrap_ids.add(self._new_ids[-1])
+                        else:
+                            self.rejected[
+                                "bounded_instance_not_admitted"
+                            ] += 1
+        finally:
+            self._admission_context = previous_context
         return [self.store[item] for item in self._new_ids[start_index:]]
 
     def random_walk(self, steps: int) -> list[Theorem]:
@@ -521,6 +837,7 @@ class TheoremGenerator(_CompositionEngine):
         if not self.rules:
             return []
         for _ in range(steps):
+            self._current_target = self._choose_target()
             rule = self._choose_rule()
             matches: list[Theorem | None] = [None] * len(rule.hypotheses)
             indices = self._match_indices(rule)
@@ -541,6 +858,7 @@ class TheoremGenerator(_CompositionEngine):
                 self._try(rule, matches)
             else:
                 self.rejected["no_candidate"] += 1
+        self._current_target = None
         return [self.store[item] for item in self._new_ids[start_index:]]
 
     def forward_saturation(self, rounds: int = 1) -> list[Theorem]:
@@ -587,8 +905,13 @@ class TheoremGenerator(_CompositionEngine):
         steps: int = 100,
     ) -> list[Theorem]:
         start_index = len(self._new_ids)
-        if self.config.bootstrap_definitions:
+        if (
+            self.config.bootstrap_definitions
+            or self.config.ground_instances_per_predicate > 0
+        ):
             self.bootstrap_definition_directions()
+        if self.config.ground_instances_per_predicate > 0:
+            self.bootstrap_bounded_term_instances()
         if mode == "forward":
             self.forward_saturation(steps)
         elif mode == "random":
@@ -636,7 +959,30 @@ class TheoremGenerator(_CompositionEngine):
             ),
         )
 
+    def _target_similarity_report(self) -> dict[str, float]:
+        if self._target_report_cache is not None:
+            return dict(self._target_report_cache)
+        search_theorems = [
+            self.store[theorem_id]
+            for theorem_id in self._new_ids
+            if theorem_id not in self._bootstrap_ids
+            and theorem_id not in self.dominated_ids
+        ]
+        report = {
+            name: max(
+                (
+                    self._target_similarity(theorem, name)
+                    for theorem in search_theorems
+                ),
+                default=0.0,
+            )
+            for name in self.target_formulas
+        }
+        self._target_report_cache = report
+        return dict(report)
+
     def summary(self) -> GenerationSummary:
+        target_report = self._target_similarity_report()
         categories = {
             name: len(items)
             for name, items in self.categorized().items()
@@ -672,7 +1018,25 @@ class TheoremGenerator(_CompositionEngine):
                 for name in self.focus_predicates
             },
             definition_bridges=self.stats["definition_bridges"],
-            search_stored=(
-                len(self._new_ids) - self.stats["definition_bridges"]
+            bounded_ground_instances=self.stats[
+                "bounded_ground_instances"
+            ],
+            search_stored=len(self._new_ids) - len(self._bootstrap_ids),
+            target_statements_total=len(self.target_formulas),
+            target_statements_touched=sum(
+                similarity >= 0.25
+                for similarity in target_report.values()
             ),
+            target_mean_best_similarity=(
+                sum(target_report.values()) / len(target_report)
+                if target_report
+                else 0.0
+            ),
+            target_best_similarity={
+                name: round(similarity, 6)
+                for name, similarity in target_report.items()
+            },
+            definition_only_search_admitted=self.stats[
+                "definition_only_search_admitted"
+            ],
         )

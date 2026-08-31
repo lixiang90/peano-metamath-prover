@@ -11,7 +11,12 @@ from .model import (
     normalized_pair,
 )
 from .parser import MetamathParser, ParseError
-from .unification import UnificationError, substitute, unify
+from .unification import (
+    UnificationError,
+    substitute,
+    substitute_simultaneous,
+    unify,
+)
 
 
 class CompositionError(ValueError):
@@ -74,6 +79,33 @@ def _instantiate_constraints(
             names = ", ".join(sorted(overlap))
             raise CompositionError(
                 f"distinct-variable constraint ({left}, {right}) collapses at {names}"
+            )
+        for a in left_vars:
+            for b in right_vars:
+                if a != b:
+                    result.add(normalized_pair(a, b))
+    return result
+
+
+def _instantiate_constraints_simultaneous(
+    constraints: set[tuple[str, str]],
+    subst: Mapping[str, Node],
+    variables: set[str],
+) -> set[tuple[str, str]]:
+    result: set[tuple[str, str]] = set()
+    for left, right in constraints:
+        left_vars = _variable_leaves(
+            substitute_simultaneous(Node(left), subst), variables
+        )
+        right_vars = _variable_leaves(
+            substitute_simultaneous(Node(right), subst), variables
+        )
+        overlap = left_vars & right_vars
+        if overlap:
+            names = ", ".join(sorted(overlap))
+            raise CompositionError(
+                f"distinct-variable constraint ({left}, {right}) "
+                f"collapses at {names}"
             )
         for a in left_vars:
             for b in right_vars:
@@ -247,6 +279,124 @@ def compose(
         },
         proof_variable_types={
             variable: variable_types[variable]
+            for variable in proof_used_variables
+        },
+        proof_d_constraints=proof_constraints,
+        kind="generated",
+    )
+
+
+def instantiate_assertion(
+    assertion: Theorem,
+    substitution: Mapping[str, Node],
+    *,
+    name: str | None = None,
+    database: Database,
+) -> Theorem:
+    """Create a proof-bearing Metamath instance of an existing assertion.
+
+    This is simultaneous Metamath substitution, not formula rewriting.  The
+    result records the assertion as its proof rule, so source assertions and
+    earlier generated assertions can both be exported and replayed.
+    """
+
+    if assertion.conclusion.op != "|-":
+        raise CompositionError("only logical assertions can be instantiated")
+    unknown = set(substitution) - set(assertion.variable_types)
+    if unknown:
+        raise CompositionError(
+            f"unknown assertion variables: {sorted(unknown)}"
+        )
+    total = {
+        variable: substitution.get(variable, Node(variable))
+        for variable in assertion.variable_types
+    }
+    available_types = {
+        **database.variable_types,
+        **assertion.variable_types,
+    }
+    parser = MetamathParser()
+    parser.database = database
+    original_types = dict(database.variable_types)
+    database.variable_types.update(assertion.variable_types)
+    try:
+        for variable, typecode in assertion.variable_types.items():
+            value = total[variable]
+            parsed = parser.parse_expression([
+                typecode,
+                *value.to_prefix().split(),
+            ])
+            if parsed.args != (value,):
+                raise CompositionError(
+                    f"{variable} is not a {typecode}: {value}"
+                )
+    except ParseError as exc:
+        raise CompositionError(
+            f"ill-typed assertion substitution: {exc}"
+        ) from exc
+    finally:
+        database.variable_types.clear()
+        database.variable_types.update(original_types)
+
+    variables = set(available_types)
+    proof_constraints = _instantiate_constraints_simultaneous(
+        assertion.d_constraints,
+        total,
+        variables,
+    )
+    hypotheses = [
+        Hypothesis(
+            f"h{index}",
+            substitute_simultaneous(hypothesis.expr, total),
+        )
+        for index, hypothesis in enumerate(assertion.hypotheses)
+    ]
+    conclusion = substitute_simultaneous(assertion.conclusion, total)
+    expressions = [*(hypothesis.expr for hypothesis in hypotheses), conclusion]
+    used_variables = {
+        node.op
+        for expression in expressions
+        for node in expression.walk()
+        if node.op in available_types
+    }
+    constraints = {
+        pair for pair in proof_constraints
+        if pair[0] in used_variables and pair[1] in used_variables
+    }
+    proof_used_variables = {
+        node.op
+        for value in total.values()
+        for node in value.walk()
+        if node.op in available_types
+    }
+    for left, right in proof_constraints:
+        proof_used_variables.update((left, right))
+    parent_ids = (
+        [assertion.id]
+        if assertion.kind == "generated" and assertion.id is not None
+        else []
+    )
+    return Theorem(
+        name=name or f"gen_instance_{assertion.name}",
+        hypotheses=hypotheses,
+        conclusion=conclusion,
+        d_constraints=constraints,
+        proof=Proof(
+            rule=assertion.name,
+            parents=parent_ids,
+            substitution={
+                f"__rule_{variable}": value
+                for variable, value in total.items()
+            },
+            premise_map=[None] * len(assertion.hypotheses),
+            depth=assertion.proof_depth + 1,
+        ),
+        variable_types={
+            variable: available_types[variable]
+            for variable in used_variables
+        },
+        proof_variable_types={
+            variable: available_types[variable]
             for variable in proof_used_variables
         },
         proof_d_constraints=proof_constraints,

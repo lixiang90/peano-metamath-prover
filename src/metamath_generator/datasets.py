@@ -83,6 +83,10 @@ def export_datasets(
                 "stored": summary.stored,
                 "search_stored": summary.search_stored,
                 "definition_bridges": summary.definition_bridges,
+                "bounded_ground_instances":
+                    summary.bounded_ground_instances,
+                "definition_only_search_admitted":
+                    summary.definition_only_search_admitted,
                 "active": summary.active,
                 "dominated": summary.dominated,
                 "categories": summary.categories,
@@ -93,6 +97,14 @@ def export_datasets(
                     "seen": summary.definition_predicates_seen,
                     "ratio": summary.definition_coverage,
                     "usage": summary.definition_usage,
+                },
+                "target_guidance": {
+                    "total": summary.target_statements_total,
+                    "touched_at_similarity_0_25":
+                        summary.target_statements_touched,
+                    "mean_best_similarity":
+                        summary.target_mean_best_similarity,
+                    "best_similarity": summary.target_best_similarity,
                 },
                 "configuration": {
                     "full_discharge_probability":
@@ -109,6 +121,14 @@ def export_datasets(
                         generator.config.definition_coverage_weight,
                     "compatible_candidate_filter":
                         generator.config.compatible_candidate_filter,
+                    "bounded_nat_max": generator.config.bounded_nat_max,
+                    "ground_instances_per_predicate":
+                        generator.config.ground_instances_per_predicate,
+                    "target_guidance_weight":
+                        generator.config.target_guidance_weight,
+                    "max_definition_only_search_per_predicate": (
+                        generator.config.max_definition_only_search_per_predicate
+                    ),
                 },
             },
             ensure_ascii=False,

@@ -4,7 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from metamath_generator.compose import CompositionError, compose
+from metamath_generator.compose import (
+    CompositionError,
+    compose,
+    instantiate_assertion,
+)
 from metamath_generator.database import TheoremDatabase
 from metamath_generator.export import export_metamath
 from metamath_generator.generator import (
@@ -153,6 +157,27 @@ class VerifierVisibilityTests(unittest.TestCase):
 
 
 class CompositionTests(unittest.TestCase):
+    def test_assertion_instantiation_is_simultaneous(self) -> None:
+        database = parse(PEANO)
+        assertion = Theorem(
+            "synthetic-distinct",
+            [],
+            typed("|-", Node("=", (Node("s"), Node("t")))),
+            d_constraints={("s", "t")},
+            variable_types={"s": "term", "t": "term"},
+        )
+        result = instantiate_assertion(
+            assertion,
+            {"s": Node("t"), "t": Node("u")},
+            database=database,
+        )
+        self.assertEqual(
+            result.conclusion,
+            typed("|-", Node("=", (Node("t"), Node("u")))),
+        )
+        self.assertEqual(result.d_constraints, {("t", "u")})
+        self.assertEqual(result.variable_types, {"t": "term", "u": "term"})
+
     def test_cross_type_unification_is_rejected(self) -> None:
         database = parse(PEANO)
         with self.assertRaises(CompositionError):
