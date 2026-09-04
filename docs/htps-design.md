@@ -1,10 +1,14 @@
 # 增强 PA 下的 HTPS 数据、训练与推理
 
+本页于 2026-09-04 按当前仓库 `htps` 分支核对；实现位于 `src/htps_prover/`，
+不再是相邻目录中的独立发布版本。
+
 ## 1. 目标与可信边界
 
 本版本借鉴 HyperTree Proof Search，但不复制 Evariste 的专用 Equations 环境。
 所有状态、动作、替换、类型和 `$d` 条件仍由项目的 Metamath 内核解释。搜索成功
-只是候选结果；只有动作序列能编译成证明，并被独立验证器完整重放，才计为解决。
+只是候选结果；当前 HTPS 命令只有在动作序列编译成证明并被项目内验证器完整重放后，
+才计为解决。这里的验证独立于模型和搜索，但不等于官方 Metamath 的外部交叉验证。
 
 连续隐式思维只改变 policy、critic、lemma gate 和 halt 的数值；它不能创建
 事实、修改形式状态或绕过证书验证。
@@ -17,7 +21,7 @@
 2. 按递归证明骨架 SHA-256 分配 train/validation/test，使同一推理模板的类型
    保持变体不会跨 split；
 3. 对每个 seed 的最深若干依赖族执行“导出 Metamath → 重新解析展开后的源库 →
-   逐条验证 `$p`”的独立回放。
+   逐条验证 `$p`”的项目内重新回放；不是外部验证器审计所有生成节点。
 
 输出包括：
 
@@ -107,6 +111,10 @@ actor 扩展为异步多进程或多 GPU，而不改变证书边界。
 `evaluate` 命令只把成功编译并重放的证书计为 solved。模型声称成功、搜索图标记
 solved、或抽象动作到达空状态，任何一项单独都不足以进入最终统计。
 
+上述项目是正式评估要求，不代表当前 JSON 已全部报告：当前只有 pass@1、动作与
+证书步数、搜索图指标、耗时和候选评分数等。外部验证门槛、完整 ID/OOD 分组和
+pass@k 调度尚待补齐；`peano-htps evaluate` 没有 `--require-external-verification`。
+
 使用 `--randomize-search` 时，每题会从 CLI 给出的上界内确定性采样 simulation、
 expansion、branching、PUCT、temperature 和 depth decay。实际取值逐题写入结果，
 同一全局 seed 可完整复现；不启用时只为每题派生独立的并列分支随机种子。
@@ -119,3 +127,8 @@ expansion、branching、PUCT、temperature 和 depth decay。实际取值逐题�
 - 同步闭环用于本地验证算法；大规模训练需要异步 actor 队列、模型版本戳和陈旧
   replay 权重。
 - 当前只实现 pass@1；pass@k 需要同一目标的多次独立搜索调度。
+- `generate` 的 `ForwardDAGConfig` 尚未转接 PA+ 目录、定义桥初始化、有界闭项和
+  35目标引导参数。基础 `neural_prover build-corpus` 已支持这些参数，但两种数据
+  格式和生成流程不能视为已经互通。
+- PA+ 基础 `train` 的批内候选损失和生成类型加权采样，不会自动出现在 HTPS
+  `train-supervised`；后者使用 latent 动作/价值/ponder 监督，候选头由 replay 更新。

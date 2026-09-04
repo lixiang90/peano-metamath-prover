@@ -172,15 +172,19 @@ sqrtupper X A B  :=  B > 0 and X B^2 < A^2
 
 ## 5. 对 AI 生成与训练的接口
 
-模型不需要输出完整定义展开。推荐动作层把新定义视为原子形式符号：
+模型可把新谓词视为原子形式符号，避免每次书写全部展开。当前实现用以下桥作为
+搜索宏（下例为逻辑结构示意，不是 CLI 或动作 token 格式）：
 
 ```text
-GOAL gcdrel A B G
-APPLY df-gcdrel
-PROPOSE_LEMMA coprime A B
+df-gcdrel             : |- iff (gcdrel A B G) expansion
+gen_df_gcdrel_unfold  : |- implies (gcdrel A B G) expansion
+gen_df_gcdrel_fold    : |- implies expansion (gcdrel A B G)
 ```
 
-训练和搜索数据应同时保留：
+`df-gcdrel` 本身证明等价式，不是直接证明任意 `gcdrel A B G` 的 tactic。桥由
+`bi1`/`bi2` 和 `ax-mp` 推出，命名已稳定为 `gen_df_<谓词>_<方向>`；可用于有界
+实例化和后续组合，证书中会内联。当前基础语料已有生成类型、引导目标和定义
+依赖元数据。完整训练/搜索数据设计仍应保留：
 
 - 高层目标 AST；
 - 使用的定义 ID；
@@ -191,6 +195,10 @@ PROPOSE_LEMMA coprime A B
 建议优先在高层接口上训练策略，在证书编译或受控的定义展开动作中才进入 β 编码
 和交叉相乘细节。tokenizer 已按每个 Metamath 符号使用原子 token，因此新增谓词
 天然形成稳定词表项。
+
+已有 checkpoint 必须使用追加式 `upgrade-pa-plus`，不能仅因符号相同就混用重新
+构建的 token ID。当前实现、已验证路径和未接通接口见
+[PA+ 神经训练与闭环推理](pa-plus-neural-training.md)。
 
 ## 6. 严格边界
 

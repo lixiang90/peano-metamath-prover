@@ -4,6 +4,12 @@ This report records the first million-example, GPT-2-small-class training run.
 It deliberately separates verified symbolic depth, teacher-forced policy
 accuracy, and complete-action success.
 
+Historical report, retained during the 2026-09-04 documentation review. Its test
+counts and next-step recommendations describe that run, not the current branch.
+For later results, see the [RTX 5090 report](first-rtx5090-closed-loop-run.md),
+[PA+ local GPU validation](pa-plus-neural-training.md), and
+[current roadmap](progress-and-roadmap.md).
+
 ## Artifacts
 
 - Database: `formal/peano-number-theory.mm`

@@ -3,15 +3,22 @@
 本文整理截至 2026-08-29 围绕形式系统表达力、定义机制、训练复杂度、
 Equations/HTPS 以及 Lean 后端的讨论，作为后续原型和受控实验的实现参考。
 
-本文是设计方案，不表示相关功能已经实现。当前可信主线仍是项目已有的
+2026-09-04 状态注记：本文保留原设计背景，其中 PA+ 分层定义的一部分已经实现：
+68个高层关系、35个非逻辑目标、定义桥、有界实例、目标引导及基础神经管线。
+分别见 [PA+ 定义库](pa-plus-definitions.md)、[随机生成](pa-plus-random-generation.md)
+和[神经训练](pa-plus-neural-training.md)。统一 typed IR、通用原始递归/归纳类型
+编译器和 Lean 多后端仍是计划，不能由现有关系宏推断为已经实现。
+
+除上述已落地部分外，本文仍是设计方案。当前可信主线是项目已有的
 PA+/Metamath 生成、搜索、证书编译和双重验证闭环；中间引理动作、连续潜在思维
 和 HTPS 风格超图搜索的当前状态见
 [增强 PA 下的 HTPS 数据、训练与推理](htps-design.md)。
 
 ## 1. 问题与目标
 
-当前 PA+ 系统的优势是内核小、替换语义明确、证书容易独立复验，并且已经形成
-从认证数据生成到闭环求解的可运行系统。主要限制是：
+最初设计时 PA+ 系统的优势是内核小、替换语义明确、证书容易独立复验，并且已经形成
+从认证数据生成到闭环求解的可运行系统。以下是当时的问题背景；新定义宏缓解了
+表层重复编码，但并未消除底层 β 编码和一般数学对象表达限制：
 
 1. 形式对象主要落在一阶自然数算术中，表达常用数学结构时层次过低；
 2. 有限序列、递归轨迹、幂、计数函数和有理近似过度依赖 Gödel β 编码；
@@ -646,4 +653,3 @@ Lean 后端使用显式版本化的 rule pack，不默认暴露整个 Mathlib。
 - Lean, [Elaboration and Compilation](https://lean-lang.org/doc/reference/latest/Elaboration-and-Compilation/)
 - Lean, [The Type System](https://lean-lang.org/doc/reference/latest/The-Type-System/)
 - Mathlib, [module documentation](https://leanprover-community.github.io/mathlib4_docs/Mathlib.html)
-

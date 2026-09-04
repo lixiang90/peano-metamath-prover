@@ -1,7 +1,7 @@
 # Peano Metamath Prover — HTPS 增强版
 
-这是 `peano-metamath-prover` 的独立并行版本，在保留增强 PA 形式内核、认证
-证书、中间引理动作和隐式连续思维链的基础上，引入：
+这是 `peano-metamath-prover` 仓库的 `htps` 分支，在保留增强 PA 形式内核、认证
+证书、中间引理动作和隐式连续思维链的基础上，引入 HTPS 与生成式 PA+ 支持：
 
 - 认证前向证明 DAG 数据生成，并按递归证明骨架隔离数据集；
 - 真正的 AND/OR 超图搜索、节点共享、PUCT 和软 critic 回传；
@@ -10,24 +10,23 @@
 - latent policy/value/lemma/halt 的监督训练与同步在线闭环；
 - 仅以最终 Metamath 证书重放成功作为 solve 指标。
 
-原项目源码被保留在本目录的 `metamath_generator` 与 `neural_prover` 包中；新增
-实现集中在 `src/htps_prover/`，不会依赖或改写相邻原仓库。
+三个包共同维护在本仓库：`metamath_generator` 提供形式内核和 PA+ 生成器，
+`neural_prover` 提供基础模型与 PA+ 训练/推理，`htps_prover` 提供超图搜索和 latent
+闭环。无需相邻的 `peano-metamath-prover-htps` 文件夹。
+
+文档于 2026-09-04 按代码版本 `b911e9c` 核对。以下命令在本仓库根目录执行；
+`bash` 代码块的多行续行使用 `\`，PowerShell 应改为反引号或合并为一行。
 
 ## HTPS 快速开始
 
 ```bash
 python -m pip install -e ".[neural,dev]"
 
-# 1. 生成认证 forward DAG、policy 数据和 lemma 数据
+# 1. 从头训练：生成 forward DAG、policy 数据和 lemma 数据
 peano-htps generate formal/peano.mm outputs/htps-data \
-  --steps 5000 --seeds 7,11,19,23 --max-proof-depth 12 \
-  --base-tokenizer BASE_TOKENIZER.json
+  --steps 5000 --seeds 7,11,19,23 --max-proof-depth 12
 
-# 2a. 将旧 checkpoint 无损升级为 latent+lemma checkpoint
-peano-htps init-latent BASE.pt BASE_TOKENIZER.json \
-  outputs/latent-initial.pt outputs/htps-data/tokenizer.json
-
-# 2b. 或从头新建约 104M 参数的 latent+lemma 模型
+# 2. 新建约 100M 参数量级的 latent+lemma 模型（精确参数量随词表变化）
 peano-htps init-model outputs/htps-data/tokenizer.json \
   outputs/latent-initial.pt
 
@@ -50,7 +49,16 @@ peano-htps evaluate outputs/closed-loop/checkpoint-002.pt \
 算法、数据格式、可信边界和已知限制见
 [`docs/htps-design.md`](docs/htps-design.md)。
 
-一个面向 `peano.mm` 的严格类型定理生成器与神经符号证明器。目前版本为
+若从旧 checkpoint 启动，第1步须追加 `--base-tokenizer BASE_TOKENIZER.json`，
+第2步改用 `peano-htps init-latent BASE.pt BASE_TOKENIZER.json outputs/latent-initial.pt outputs/htps-data/tokenizer.json`。
+不得把从头生成的 tokenizer 与旧 checkpoint 任意混配。HTPS 当前认证口径为项目内
+证书重放，尚未接入官方 Metamath 的强制验证 CLI 选项。
+
+PA+ 的目录、有界实例和35目标生成参数已接入 `neural_prover build-corpus`；
+尚未接入 `peano-htps generate` 或完整 Scale 路径。PA+ 实验请使用下方专门示例。
+
+这是面向 `peano.mm`、数论定义库和 `peano-pa-plus.mm` 的严格类型定理生成器与
+神经符号证明器。目前版本为
 Beta：神经网络和搜索器只能提出候选动作，成功证明必须能够编译并由项目内
 验证器重放；重要结果还应使用外部 Metamath 实现交叉验证。
 
@@ -63,6 +71,8 @@ Beta：神经网络和搜索器只能提出候选动作，成功证明必须能�
 - 一阶合一、occurs check、精确类型检查和 Metamath `$d` 约束。
 - 真空量词过滤、前提 subsumption、重复检测和数学结构质量评分。
 - 原子形式 token 的 encoder-decoder Transformer 策略/价值模型。
+- PA+ 定义上下文、目标标签提示、类型化替换槽位与可认证定义桥搜索宏。
+- PA+ 有界自然数实例、目标引导生成、批内候选损失与分类型加权采样。
 - 对内核合法有限候选集合进行索引打分的结构化策略头。
 - 可验证的中间引理 cut 动作：先证明引理，再将其用于最终目标。
 - 可选的隐式连续向量思维链与学习停止头；旧模型文件和检查点保持兼容。
@@ -86,8 +96,14 @@ docs/                    架构、数论定义与 Scale 实验说明
 
 ## 当前进展
 
-截至 2026-08-24，仓库已经完成 1.1M 数据、GPT-2 Small 量级模型的 10,000 步
-训练，以及第一次固定预算闭环评估：
+最新工程进展是 2026-08-31 的 PA+ 本地 CUDA 验证：68个高层定义、35个非逻辑目标，
+136条展开/折叠桥和有界实例已接入基础神经管线。RTX 3060 Laptop GPU 上用616例
+语料训练64维、2层 encoder/decoder 模型3轮，验证损失从5.9908降至3.8880；一个
+定义桥实例经混合搜索闭合，证书通过项目内和官方 Metamath 双验证。这是接线验证，
+不是35目标解题率实验，也不是百万级 PA+ 训练。详见
+[PA+ 神经训练与闭环推理](docs/pa-plus-neural-training.md)。
+
+以下保留 2026-08-24 的历史规模结果，来自数论库而非新增 PA+ 语料：
 
 - 生成 1,100,000 条可回放动作样本，训练/验证/测试为
   1,080,000/10,000/10,000；
@@ -126,6 +142,10 @@ python -m pip install -e ".[neural]"
 python -m pip install -e ".[dev]"
 python -m pytest
 ```
+
+上述安装仅覆盖不依赖 PyTorch 的测试；完整神经/HTPS 回归应安装 `.[neural,dev]`。
+本地已有 PyTorch 时，也可在 PowerShell 中设 `$env:PYTHONPATH='src'` 后运行
+`python -m unittest discover -s tests`，无需重复安装。
 
 ## 快速开始
 
@@ -182,7 +202,9 @@ python -m neural_prover build-corpus \
   --bootstrap-definitions --definition-coverage-weight 3 \
   --bounded-nat-max 2 --ground-instances-per-predicate 1 \
   --target-guidance-weight 4 \
-  --max-definition-only-search-per-predicate 1
+  --max-definition-only-search-per-predicate 1 \
+  --max-proof-depth 8 --max-ast-depth 64 --max-variables 24 \
+  --max-state-tokens 1024 --max-action-tokens 512
 ```
 
 词表、候选头训练、旧 checkpoint 升级和推理时的保守定义桥见
@@ -216,14 +238,19 @@ python -m neural_prover train-scale \
 更多说明见：
 
 - [系统架构](docs/architecture.md)
+- [HTPS 数据、训练与推理](docs/htps-design.md)
 - [保守数论定义](docs/number-theory.md)
+- [PA+ 分层定义库](docs/pa-plus-definitions.md)
+- [PA+ 随机定理生成](docs/pa-plus-random-generation.md)
+- [PA+ 神经训练与闭环推理](docs/pa-plus-neural-training.md)
+- [形式系统演进设计（含未实现部分）](docs/formal-system-evolution.md)
 - [首次百万级训练与深度实验](docs/first-large-scale-run.md)
 - [首次 RTX 5090 规模训练与闭环实验](docs/first-rtx5090-closed-loop-run.md)
 - [中间引理与连续潜在思维](docs/lemma-and-latent-reasoning.md)
 - [当前进展与研究路线](docs/progress-and-roadmap.md)
 - [历史 Scale 基线](docs/scale-baseline.md)
 
-## 下一阶段：闭环证明
+## 已实现的闭环证明与待完成验收
 
 P0 可信评估、P1 有限候选策略头和 P2 AlphaZero 回放的工程路径已经实现；正式
 研究验收仍需固定 benchmark 的三种子实验。构建公开 benchmark 时应同时传入
@@ -263,7 +290,7 @@ python -m neural_prover prove-decomposed \
 仍需用认证 replay 训练；该工程原型本身不构成解题率提升的实验结论。设计与验收
 边界见[中间引理与连续潜在思维](docs/lemma-and-latent-reasoning.md)。
 
-计划中的真实证明流程是：
+已实现的证明流程是：
 
 ```text
 目标与开放前提
@@ -272,7 +299,7 @@ python -m neural_prover prove-decomposed \
     ↓
 神经策略排序，并可在输出前进行有限潜在思考
     ↓
-Beam/MCTS 探索、执行与回溯
+    Best-first / MCTS / HTPS 探索、执行与回溯
     ↓
 所有开放前提消解
     ↓
@@ -281,7 +308,7 @@ Beam/MCTS 探索、执行与回溯
 项目内验证器与外部 Metamath 实现交叉验证
 ```
 
-强化学习将只奖励实际通过验证的证明，而不是奖励复述训练集动作。连续潜在
+闭环回放只把实际通过验证的完整证明标为成功；预算耗尽不伪造负价值标签。连续潜在
 思维只用于动作前的内部规划；所有改变形式状态的步骤仍必须是离散、可记录、
 可验证的 Metamath 动作。详细阶段和验收标准见
 [当前进展与研究路线](docs/progress-and-roadmap.md)。
@@ -310,8 +337,9 @@ Beam/MCTS 探索、执行与回溯
 3. 项目内验证器能够从原始形式库按声明顺序和活动作用域重放该证明。
 
 当前项目内验证器只支持未压缩证明，尚不能替代经过长期审计的通用 Metamath
-验证器。CLI 可调用 `metamath-exe` 做独立验证；发布或引用重要结论时应使用
-`--require-external-verification` 将其设为强制认证门槛。
+验证器。`neural_prover evaluate` / `evaluate-mcts` 可调用外部 Metamath；发布或
+引用这些评估结果时应使用 `--require-external-verification` 将其设为强制认证门槛。
+该选项不是所有子命令共有的能力，HTPS 的外部强制验证仍待接入。
 
 ## 项目沿革
 
