@@ -20,6 +20,7 @@ from .lemma import (
 from .mcts import MCTSConfig, MCTSResult, ProofMCTS
 from .search import HybridPolicy, TransformerPolicy
 from .tokenizer import MetamathTokenizer
+from .data_contract import tokenizer_fingerprint, validate_checkpoint_tokenizer
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +44,12 @@ def initialize_latent_checkpoint(
     """Create a latent model and append lemma tokens compatibly."""
 
     tokenizer = MetamathTokenizer.load(base_tokenizer_path)
+    from .model import ProofTransformer
+    base, payload = ProofTransformer.load_checkpoint(base_checkpoint, map_location=map_location)
+    validate_checkpoint_tokenizer(base, payload, tokenizer)
+    del base, payload
+    if Path(base_checkpoint).resolve() == Path(output_checkpoint).resolve() or Path(base_tokenizer_path).resolve() == Path(output_tokenizer_path).resolve():
+        raise ValueError("choose new output paths for the latent checkpoint and tokenizer")
     upgraded = tokenizer.upgraded_for_lemma_actions()
     model, upgrade = LatentProofTransformer.from_base_checkpoint(
         base_checkpoint,
@@ -57,7 +64,10 @@ def initialize_latent_checkpoint(
     upgraded.save(tokenizer_path)
     model.save_checkpoint(
         checkpoint_path,
-        metadata={"initialization": upgrade["vocabulary_expansion"]},
+        metadata={
+            "initialization": upgrade["vocabulary_expansion"],
+            "tokenizer_sha256": tokenizer_fingerprint(upgraded),
+        },
     )
     return {
         "checkpoint": str(checkpoint_path.resolve()),

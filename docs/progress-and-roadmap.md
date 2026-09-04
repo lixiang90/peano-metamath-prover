@@ -14,8 +14,9 @@ PA+、MCTS、HTPS、中间引理和连续潜在思维现在作为同一项目维
 数据格式与训练器合成一个接口。操作入口见[训练与评估指南](training-and-evaluation.md)，
 全部文档按[文档导航](README.md)分类。
 
-后续按依赖顺序推进：先打通 PA+ → HTPS forward 和升级 checkpoint 微调；再补齐
-不参与35目标引导的保留集与跨后端统一预算协议；最后开展多种子 solve-rate 对照。
+PA+ → HTPS forward 和升级 checkpoint 微调已在后续本地贯通，包含序列化动作审计、
+类型采样及词表一致性检查，见[贯通记录](pa-plus-htps-training.md)。下一步补齐
+不参与35目标引导的保留集与跨后端统一预算协议，再开展多种子 solve-rate 对照。
 Scale 桥模板集成和扩大训练量不能替代这些验收。共同的环境指纹保证候选配置
 一致，但 MCTS simulation 与 HTPS simulation 并不等量，不能直接拿同次数当公平比较。
 
@@ -36,8 +37,8 @@ P0–P2 的研究门槛：新增权重训练和规模对照实验应在现有可
 
 HTPS 已在本仓库 `src/htps_prover/` 提供按递归骨架切分的 forward DAG 数据、
 latent 监督训练、超图搜索和同步 replay 闭环；这不意味着已完成规模能力验收。
-HTPS 评估、collect 和 closed-loop 已支持强制外部验证。PA+ 目录参数尚未接入 HTPS forward 生成
-和完整 Scale 路径；详细边界见[HTPS 设计](htps-design.md)和
+HTPS 评估、collect 和 closed-loop 已支持强制外部验证。PA+ 目录参数已接入 HTPS forward
+生成与监督训练；完整 Scale 路径仍待模板集成。详细边界见[HTPS 设计](htps-design.md)和
 [PA+ 神经管线](pa-plus-neural-training.md)。
 
 认证补齐已将 PA+ 定义桥接入普通/分片语料审计，统一四策略的定义桥、有界项与

@@ -37,8 +37,11 @@ python -m neural_prover upgrade-pa-plus \
 
 应给输出选择新路径，以保留原文件。升级支持基础和 latent checkpoint，但只完成
 词表/权重扩容，不训练新增行，也不保证动作编码改变后行为完全不变。基础 `train`
-始终从头建模，没有加载升级 checkpoint 的续训参数；升级后的 PA+ 微调入口仍需
-另行接线，不能直接用下方 `train` 命令声称是在续训 `NEW.pt`。
+不传 checkpoint 时仍从头建模；现可用 `--checkpoint NEW.pt --checkpoint-tokenizer
+NEW-tokenizer.json` 做新优化器微调。先在 `build-corpus` 传入 `--base-tokenizer
+NEW-tokenizer.json`，保持训练 ID 一致；上下文长度不得超过原 checkpoint。
+这不是优化器/RNG/数据游标的精确恢复。完整示例见
+[PA+ 数据与训练贯通](pa-plus-htps-training.md)。
 
 ## 2. 语料和训练
 
@@ -132,8 +135,9 @@ RTX 3060 Laptop GPU 上完成了一次小型但非纯 CPU 的闭环验证：
   生成阶段用 `--target-guidance-weight 0`，保存的状态提示用 `--max-target-hints 0`。
   各层开关不能互相替代，且仍须保留未参与引导的目标族作为 OOD 评估。
 - HTPS 的评估/回放收集/同步闭环已接入可选强制外部验证，未通过时不接受成功路径。
-- `build-scale-corpus` 的源模板解析仍待接入 PA+，`peano-htps generate` 仍没有目录、
-  有界实例和目标引导参数；基础 checkpoint 微调入口也仍待补齐。审计分片能力不
-  等于已经完成 Scale 生成集成。
+- HTPS `generate` 已接入 PA+ 目录、有界实例与目标引导，输出 policy/lemma 的
+  完整动作审计；基础 `train` 也支持从配套的升级 checkpoint 微调。
+- `build-scale-corpus` 的源模板解析仍待接入 PA+；审计分片能力不等于已经完成
+  Scale 生成集成。
 
 命令、实测结果和剩余研究验收见[PA+ 认证与公平评估](pa-plus-certification.md)。

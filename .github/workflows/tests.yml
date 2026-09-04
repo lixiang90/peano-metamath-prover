@@ -135,3 +135,7 @@ jobs:
         env:
           METAMATH_EXECUTABLE: ${{ github.workspace }}/metamath
         run: python -m unittest discover -s tests -p test_certification.py -v
+      - name: Verify PA+ training-to-search integration
+        env:
+          METAMATH_EXECUTABLE: ${{ github.workspace }}/metamath
+        run: python -m unittest discover -s tests -p test_pa_plus_training.py -v

@@ -3,16 +3,22 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from metamath_generator.export import export_metamath, theorem_record
+from metamath_generator.definitions import load_definition_catalog
 from metamath_generator.generator import GenerationConfig, TheoremGenerator
 from metamath_generator.model import Node, Theorem
 from metamath_generator.parser import MetamathParser, parse
 from metamath_generator.unification import substitute_simultaneous
 from metamath_generator.verifier import verify
 from neural_prover.tokenizer import MetamathTokenizer
+from neural_prover.data_contract import tokenizer_fingerprint
+from neural_prover.lemma import LemmaBackwardEnvironment
+
+from .data import replay_record, audit_forward_dataset
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,12 +39,31 @@ class ForwardDAGConfig:
     verify_deepest_per_seed: int = 4
     max_state_tokens: int = 384
     max_action_tokens: int = 256
+    definition_catalog: str | None = None
+    bootstrap_definitions: bool = False
+    definition_coverage_weight: float = 0.0
+    bounded_nat_max: int = -1
+    ground_instances_per_predicate: int = 0
+    target_guidance_weight: float = 0.0
+    max_definition_only_search_per_predicate: int = -1
+    max_target_hints: int = 3
 
     def validate(self) -> None:
         if not self.seeds or self.steps_per_seed <= 0:
             raise ValueError("at least one seed and positive steps are required")
         if self.validation_fraction + self.test_fraction >= 1.0:
             raise ValueError("validation and test fractions must sum to < 1")
+        if min(self.validation_fraction, self.test_fraction) < 0:
+            raise ValueError("split fractions must be non-negative")
+        if min(self.max_state_tokens, self.max_action_tokens) <= 0:
+            raise ValueError("token limits must be positive")
+        if self.verify_deepest_per_seed < 0:
+            raise ValueError("verification count must be non-negative")
+        if self.definition_catalog is None and (
+            self.bootstrap_definitions or self.ground_instances_per_predicate
+            or self.target_guidance_weight or self.definition_coverage_weight
+        ):
+            raise ValueError("PA+ generation options require a definition catalog")
 
 
 def _proof_skeleton(theorem_id: int, generator: TheoremGenerator) -> tuple:
@@ -99,6 +124,39 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
             stream.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _group_splits(nodes, policies, lemmas, cfg):
+    """Keep both recursive skeletons and identical root states together."""
+    parents = {}
+
+    def find(key):
+        parents.setdefault(key, key)
+        while parents[key] != key:
+            parents[key] = parents[parents[key]]
+            key = parents[key]
+        return key
+
+    for node in nodes:
+        a = find("proof:" + node["proof_skeleton_sha256"])
+        b = find("state:" + node["state_sha256"])
+        parents[max(a, b)] = min(a, b)
+    for collection in (nodes, policies, lemmas):
+        for record in collection:
+            group = find("proof:" + record["proof_skeleton_sha256"])
+            record["split_group_sha256"] = hashlib.sha256(group.encode()).hexdigest()
+            record["split"] = _split((group,), cfg)
+
+
+def _deduplicate(records, action_key):
+    seen = set()
+    result = []
+    for record in records:
+        key = (tuple(record["state_tokens"]), tuple(record[action_key]))
+        if key not in seen:
+            seen.add(key)
+            result.append(record)
+    return result
+
+
 def _independently_verify(
     source_path: Path,
     generator: TheoremGenerator,
@@ -145,11 +203,23 @@ def build_forward_dag_dataset(
     cfg.validate()
     source = Path(database_path)
     database = parse(source)
+    catalog = load_definition_catalog(cfg.definition_catalog) if cfg.definition_catalog else None
     tokenizer = (
         MetamathTokenizer.load(base_tokenizer_path)
         if base_tokenizer_path is not None
         else MetamathTokenizer.from_database(database)
-    ).upgraded_for_lemma_actions()
+    )
+    if catalog is not None:
+        tokenizer = tokenizer.upgraded_for_pa_plus(
+            database, catalog.definition_names, catalog.statement_names,
+            bounded_nat_max=cfg.bounded_nat_max, max_target_hints=cfg.max_target_hints,
+        )
+    elif tokenizer.pa_plus_context.enabled:
+        raise ValueError("PA+ base tokenizer requires an explicit matching definition catalog")
+    tokenizer = tokenizer.upgraded_for_lemma_actions()
+    fingerprint = tokenizer_fingerprint(tokenizer)
+    environment = LemmaBackwardEnvironment(database)
+    environment.configure_from_tokenizer(tokenizer)
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
     tokenizer.save(output / "tokenizer.json")
@@ -164,6 +234,8 @@ def build_forward_dag_dataset(
     run_summaries: list[dict] = []
     verified_certificates = 0
     verified_declarations = 0
+    filtered = Counter()
+    encoding_failures = []
 
     for seed in cfg.seeds:
         generator = TheoremGenerator(
@@ -177,9 +249,18 @@ def build_forward_dag_dataset(
                 depth_parent_bias=cfg.depth_parent_bias,
                 full_discharge_probability=cfg.full_discharge_probability,
                 closed_parent_probability=cfg.closed_parent_probability,
+                bootstrap_definitions=cfg.bootstrap_definitions,
+                focus_predicates=catalog.definition_names if catalog else (),
+                definition_coverage_weight=cfg.definition_coverage_weight,
+                bounded_nat_max=cfg.bounded_nat_max,
+                ground_instances_per_predicate=cfg.ground_instances_per_predicate,
+                target_statements=catalog.statement_names if catalog else (),
+                target_guidance_weight=cfg.target_guidance_weight,
+                max_definition_only_search_per_predicate=cfg.max_definition_only_search_per_predicate,
             ),
         )
         generator.generate("random", cfg.steps_per_seed)
+        rule_lookup = {item.name: item for item in generator.store}
         generated = [
             theorem for theorem in generator.store.generated()
             if theorem.proof is not None and theorem.id is not None
@@ -208,22 +289,37 @@ def build_forward_dag_dataset(
                     repr(skeleton).encode("utf-8")
                 ).hexdigest(),
                 "independent_certificate_family_verified": theorem in selected,
+                "generation_kind": generator.generation_context.get(theorem.id, "search"),
+                "guidance_target": generator.guidance_targets.get(theorem.id),
+                "definition_support": sorted(generator.definition_support.get(theorem.id, ())),
             })
             nodes.append(record)
 
             canonical = tokenizer.canonical_variables(theorem)
             state_tokens = tokenizer.state_tokens(theorem, canonical)
+            record["state_sha256"] = hashlib.sha256(repr(state_tokens).encode()).hexdigest()
+            shared = {
+                key: record[key] for key in (
+                    "generation_kind", "guidance_target", "definition_support",
+                    "proof_skeleton_sha256", "state_sha256",
+                )
+            }
+            shared["tokenizer_sha256"] = fingerprint
             try:
                 action_tokens = tokenizer.action_tokens(
-                    theorem, database, canonical
+                    theorem, database, canonical, rule_lookup=rule_lookup
                 )
-            except ValueError:
+            except ValueError as exc:
+                filtered["policy_encoding"] += 1
+                if len(encoding_failures) < 20:
+                    encoding_failures.append({"seed": seed, "theorem": theorem.name, "error": str(exc)})
                 continue
             if (
                 len(state_tokens) <= cfg.max_state_tokens
                 and len(action_tokens) <= cfg.max_action_tokens
             ):
                 policies[split].append({
+                    **shared,
                     "run_seed": seed,
                     "theorem_id": theorem.id,
                     "theorem_name": theorem.name,
@@ -237,6 +333,13 @@ def build_forward_dag_dataset(
                         "proof_skeleton_sha256"
                     ],
                 })
+                replay_record(policies[split][-1], tokenizer, database, environment)
+            else:
+                filtered["policy_length"] += 1
+
+            if len(state_tokens) > cfg.max_state_tokens:
+                filtered["lemma_state_length"] += 1
+                continue
 
             for premise_index, parent_id in enumerate(
                 theorem.proof.premise_map
@@ -254,10 +357,13 @@ def build_forward_dag_dataset(
                         lemma, canonical
                     )
                 except ValueError:
+                    filtered["lemma_encoding"] += 1
                     continue
                 if len(lemma_tokens) > cfg.max_action_tokens:
+                    filtered["lemma_action_length"] += 1
                     continue
-                lemmas[split].append({
+                lemma_record = {
+                    **shared,
                     "run_seed": seed,
                     "root_theorem_id": theorem.id,
                     "root_theorem_name": theorem.name,
@@ -278,10 +384,20 @@ def build_forward_dag_dataset(
                         (theorem.proof_depth - parent.proof_depth)
                         / max(1, theorem.proof_depth),
                     ),
-                })
+                }
+                # Parent dependencies may introduce fresh variables, exceed the
+                # kernel cut limit, or already be hypotheses. Never train on
+                # a proposal which the actual inference environment rejects.
+                try:
+                    replay_record(lemma_record, tokenizer, database, environment, lemma=True)
+                except ValueError:
+                    filtered["lemma_kernel_rejected"] += 1
+                    continue
+                lemmas[split].append(lemma_record)
 
         summary = generator.summary()
         run_summaries.append({
+            **asdict(summary),
             "seed": seed,
             "attempts": summary.attempts,
             "stored": summary.stored,
@@ -294,9 +410,19 @@ def build_forward_dag_dataset(
             ),
         })
 
+    all_policies = [record for rows in policies.values() for record in rows]
+    all_lemmas = [record for rows in lemmas.values() for record in rows]
+    _group_splits(nodes, all_policies, all_lemmas, cfg)
+    policy_count, lemma_count = len(all_policies), len(all_lemmas)
+    all_policies = _deduplicate(all_policies, "action_tokens")
+    all_lemmas = _deduplicate(all_lemmas, "lemma_action_tokens")
+    filtered["duplicate_policy"] = policy_count - len(all_policies)
+    filtered["duplicate_lemma"] = lemma_count - len(all_lemmas)
     _write_jsonl(output / "proof_dag_nodes.jsonl", nodes)
     counts: dict[str, dict[str, int]] = {}
     for split in ("train", "validation", "test"):
+        policies[split] = [r for r in all_policies if r["split"] == split]
+        lemmas[split] = [r for r in all_lemmas if r["split"] == split]
         _write_jsonl(output / f"policy_{split}.jsonl", policies[split])
         _write_jsonl(output / f"lemma_{split}.jsonl", lemmas[split])
         counts[split] = {
@@ -304,7 +430,7 @@ def build_forward_dag_dataset(
             "lemma": len(lemmas[split]),
         }
     manifest = {
-        "format": "peano-htps-forward-dag-v1",
+        "format": "peano-htps-forward-dag-v2",
         "database": str(source.resolve()),
         "base_tokenizer": (
             str(Path(base_tokenizer_path).resolve())
@@ -312,6 +438,14 @@ def build_forward_dag_dataset(
         ),
         "configuration": asdict(cfg),
         "vocabulary_size": len(tokenizer),
+        "tokenizer_sha256": fingerprint,
+        "environment": environment.configuration_record(),
+        "filtered": dict(filtered),
+        "encoding_failure_examples": encoding_failures,
+        "generation_kinds": {
+            "policy": dict(Counter(r["generation_kind"] for r in all_policies)),
+            "lemma": dict(Counter(r["generation_kind"] for r in all_lemmas)),
+        },
         "proof_dag_nodes": len(nodes),
         "counts": counts,
         "independent_verification": {
@@ -319,9 +453,13 @@ def build_forward_dag_dataset(
             "replayed_generated_declarations": verified_declarations,
             "method": "export Metamath, reparse expanded source, replay every $p",
         },
-        "split_policy": "SHA-256 of recursive proof skeleton",
+        "split_policy": "connected components of recursive proof skeleton and identical root state",
         "runs": run_summaries,
     }
+    audit = audit_forward_dataset(source, output, output / "action-audit.json")
+    if audit["invalid_actions"]:
+        raise ValueError(f"HTPS action audit failed: {audit['failures'][:3]}")
+    manifest["action_audit"] = {k: audit[k] for k in ("valid_actions", "invalid_actions", "scope")}
     (output / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",

@@ -106,5 +106,6 @@ python -m unittest discover -s tests -p test_certification.py -v
 不能把跳过等同于已完成外部验证。显式设置的程序无效时测试失败，不静默跳过。
 统一主线 CI 会构建固定版本的官方验证器，通过该环境变量运行 PA+ 桥与 HTPS 集成测试。
 
-后续仍需：PA+ → HTPS 数据贯通、Scale 模板集成、升级 checkpoint 微调入口、
-未参与目标引导的保留集，以及多种子同预算的正式 solve-rate 实验。
+后续更新：PA+ → HTPS 数据与升级 checkpoint 微调已完成本地贯通，见
+[数据与训练记录](pa-plus-htps-training.md)。Scale 模板集成、未参与目标引导的
+保留集，以及多种子同预算的正式 solve-rate 实验仍待完成。

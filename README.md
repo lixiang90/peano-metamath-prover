@@ -26,7 +26,8 @@ from learning has not yet been established.
 MCTS and HTPS share mathematical semantics, but are not just different numeric parameters:
 their search structures and replay targets differ. Existing CLI and dataset formats remain
 separate selectable workflows. PA+ catalog-driven generation is wired into `build-corpus`;
-it is **not yet wired into HTPS `generate` or the full Scale generator**. See the
+it is also wired into HTPS `generate`, with policy/lemma action audits and training.
+The **full Scale generator still needs PA+ template integration**. See the
 [workflow guide](docs/training-and-evaluation.md) for the integration matrix and commands.
 
 ## 2. Formal scope and trust
@@ -127,8 +128,8 @@ Evidence as of 2026-09-04:
   solve-rate improvement from learning, no 35-target success result, and no completed
   large-scale PA+/HTPS experiment.
 
-Next: connect PA+ generation to HTPS and checkpoint fine-tuning, build held-out target
-families, then run multi-seed controlled evaluations before scaling up. Evidence and
+PA+ → HTPS data/training and base-checkpoint fine-tuning are now connected. Next: build
+held-out target families and run multi-seed controlled evaluations before scaling up. Evidence and
 acceptance criteria are in the [progress and roadmap](docs/progress-and-roadmap.md).
 
 ## 5. Repository and documentation

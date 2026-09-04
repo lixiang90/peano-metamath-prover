@@ -93,7 +93,8 @@ state/action ID 进行跨 split 全局去重。训练器支持 bf16、梯度累�
 Python/PyTorch RNG 状态、scheduler、累计计数和完整 metrics 历史。
 
 该路径仍是基础库模板扩增，不等于已支持 PA+ 的生成式桥模板；PA+ 新特性目前
-接入 `build-corpus` / `train` 与模型策略推理。各接口限制见
+接入 `build-corpus` / `train`、HTPS `generate` / `train-supervised` 与模型策略推理。
+基础 checkpoint 支持显式配套词表的新优化器微调。各接口限制见
 [PA+ 神经训练与闭环推理](pa-plus-neural-training.md)。
 
 ## 7. 评估边界

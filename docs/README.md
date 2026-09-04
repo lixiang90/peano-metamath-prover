@@ -22,6 +22,8 @@
 
 ## 搜索、训练与认证
 
+- [PA+ 数据与训练贯通](pa-plus-htps-training.md)：生成参数、动作审计、HTPS 监督训练、
+  旧 checkpoint 微调与本地端到端验收。
 - [HTPS 设计](htps-design.md)：forward DAG、AND/OR 超图、受保护引理边与同步回放。
 - [中间引理与连续潜在推理](lemma-and-latent-reasoning.md)：动作语义、模型升级、验收边界。
 - [PA+ 认证与公平评估](pa-plus-certification.md)：确定性动作编码、环境指纹、外部门槛、消融。

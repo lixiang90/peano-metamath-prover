@@ -23,7 +23,8 @@ PA+、MCTS、HTPS、中间引理和连续潜在推理统一在 `main` 维护，�
 
 MCTS 和 HTPS 共享数学语义，但并非仅有数值参数不同：搜索结构和回放目标也不同。
 现有 CLI 与数据格式保留为可选工作流。PA+ 目录驱动生成已接入 `build-corpus`，
-**尚未接入 HTPS `generate` 或完整 Scale 生成器**。接线矩阵与命令见
+现也已贯通 HTPS `generate`、policy/lemma 动作审计与训练。
+**完整 Scale 生成器仍待 PA+ 模板集成**。接线矩阵与命令见
 [训练与评估指南](docs/training-and-evaluation.md)。
 
 ## 2. 形式系统与可信边界
@@ -114,8 +115,8 @@ MCTS 与 HTPS 使用相同 simulation 次数，并不意味着计算预算相同
 - PA+ GPU 与 latent/HTPS 工作仍属于工程验证。尚无学习带来解题率提升的证据，
   没有35目标证明成功的结果，也没有完成大规模 PA+/HTPS 实验。
 
-下一步先打通 PA+ → HTPS 生成和 checkpoint 微调，建立保留目标族，再做多种子受控
-评估，最后考虑扩大训练。详细证据与验收标准见[进展与路线](docs/progress-and-roadmap.md)。
+PA+ → HTPS 数据/训练及基础 checkpoint 微调已贯通。下一步建立保留目标族，完成
+多种子受控评估，再考虑扩大训练。详细证据与验收标准见[进展与路线](docs/progress-and-roadmap.md)。
 
 ## 5. 项目结构与文档
 

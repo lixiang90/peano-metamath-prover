@@ -16,6 +16,7 @@ from metamath_generator.parser import parse
 from metamath_generator.quality import semantic_profile
 
 from .tokenizer import MetamathTokenizer, TokenizerConfig
+from .data_contract import tokenizer_fingerprint
 
 Split = Literal["train", "validation", "test"]
 Difficulty = Literal["easy", "medium", "hard"]
@@ -48,6 +49,7 @@ class CorpusBuildConfig:
     max_state_tokens: int = 256
     max_action_tokens: int = 192
     tokenizer: TokenizerConfig = TokenizerConfig()
+    base_tokenizer: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,6 +326,15 @@ def build_corpus(
         cfg.tokenizer,
         pa_plus_context=pa_plus_context,
     )
+    if cfg.base_tokenizer is not None:
+        tokenizer = MetamathTokenizer.load(cfg.base_tokenizer)
+        if catalog is not None:
+            tokenizer = tokenizer.upgraded_for_pa_plus(
+                database, focus_predicates, target_statements,
+                bounded_nat_max=cfg.bounded_nat_max, max_target_hints=cfg.max_target_hints,
+            )
+        elif tokenizer.pa_plus_context.enabled:
+            raise ValueError("PA+ base tokenizer requires an explicit matching definition catalog")
     best: dict[str, ProverExample] = {}
     run_summaries: list[dict] = []
     for seed in cfg.seeds:
@@ -440,9 +451,10 @@ def build_corpus(
         "database": str(Path(database_path).resolve()),
         "configuration": {
             **asdict(cfg),
-            "tokenizer": asdict(cfg.tokenizer),
+            "tokenizer": asdict(tokenizer.config),
         },
         "vocabulary_size": len(tokenizer),
+        "tokenizer_sha256": tokenizer_fingerprint(tokenizer),
         "counts": counts,
         "total": sum(counts.values()),
         "proof_depth_histogram": split_depth_histograms,

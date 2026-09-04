@@ -53,7 +53,7 @@ class DocumentationTests(unittest.TestCase):
             "htps_prover": htps_parser(),
         }
         count = 0
-        for path in [ROOT / "README.md", ROOT / "docs/training-and-evaluation.md"]:
+        for path in [ROOT / "README.md", ROOT / "docs/training-and-evaluation.md", ROOT / "docs/pa-plus-htps-training.md"]:
             for language, block in BLOCK.findall(path.read_text(encoding="utf-8")):
                 if language != "bash":
                     continue

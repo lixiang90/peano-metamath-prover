@@ -20,8 +20,8 @@
 `htps_prover.forward` 在已有质量控制生成器上增加三项约束：
 
 1. 保存每个派生节点、规则、替换、前提映射和递归证明骨架；
-2. 按递归证明骨架 SHA-256 分配 train/validation/test，使同一推理模板的类型
-   保持变体不会跨 split；
+2. 将相同递归证明骨架或相同根状态关联为连通组，按组 SHA-256 分配
+   train/validation/test；跨种子的重复 state/action 去重，policy/lemma 保持同组；
 3. 对每个 seed 的最深若干依赖族执行“导出 Metamath → 重新解析展开后的源库 →
    逐条验证 `$p`”的项目内重新回放；不是外部验证器审计所有生成节点。
 
@@ -31,6 +31,13 @@
 - `policy_{split}.jsonl`：目标到下一条认证规则的监督数据；
 - `lemma_{split}.jsonl`：由实际父证明实例化而来的中间引理动作；
 - `tokenizer.json` 与 `manifest.json`。
+
+PA+ 生成参数现与基础生成器贯通：目录、定义桥初始化、有界实例、目标引导与包装
+限流均可通过 `generate` 设置。动作编码从完整生成库查找桥规则，所有输出 policy
+和 lemma 动作都先由真实环境回放；不合法的引理候选被过滤并统计，不作为训练监督。
+生成后自动写入 `action-audit.json`，也可用 `audit-data` 在另一进程全量复查。
+这证明序列化动作合法，不等于每条完整证明都通过外部验证。配套命令见
+[PA+ 数据与训练贯通](pa-plus-htps-training.md)。
 
 若从旧 checkpoint 继续训练，生成时必须传入其 tokenizer。构建器只在词表末尾
 追加 lemma 控制符，保持所有旧 token ID 不变；随机重新构建相同“符号集合”的
@@ -86,6 +93,12 @@ commit marker 再次保证未证明的引理不会成为活动假设。
 - 状态价值；
 - 连续 latent thought 与 halt head 的 ponder 正则。
 
+PA+ 语料还支持按生成类型加权采样，默认提高有界实例采样权重；
+`--no-pa-plus-balanced-sampling` 可关闭。`--candidate-loss-weight` 默认为0，设为
+正值时增加批内多正例候选损失，并标记候选头已训练。它不是逐状态内核合法候选集
+上的准确率，不能代替 replay 训练。训练报告保留输入/实际消费类型、引理数和长度过滤数。
+新数据与 checkpoint 保存词表/上下文指纹；训练拒绝 token/ID 不一致和指纹不匹配。
+
 在线阶段从 HTPS 超图提取：
 
 - policy：只标注根的最小已认证证明 hypertree，使用 one-hot 最短证明边；
@@ -131,8 +144,7 @@ expansion、branching、PUCT、temperature 和 depth decay。实际取值逐题�
 - 同步闭环用于本地验证算法；大规模训练需要异步 actor 队列、模型版本戳和陈旧
   replay 权重。
 - 当前只实现 pass@1；pass@k 需要同一目标的多次独立搜索调度。
-- `generate` 的 `ForwardDAGConfig` 尚未转接 PA+ 目录、定义桥初始化、有界闭项和
-  35目标引导参数。基础 `neural_prover build-corpus` 已支持这些参数，但两种数据
-  格式和生成流程不能视为已经互通。
-- PA+ 基础 `train` 的批内候选损失和生成类型加权采样，不会自动出现在 HTPS
-  `train-supervised`；后者使用 latent 动作/价值/ponder 监督，候选头由 replay 更新。
+- 基础语料与 HTPS policy/lemma 仍是不同格式：应从相同 PA+ 生成配置分别构造，
+  不直接替换文件。两者均可沿用显式 `--base-tokenizer` 保持既有 ID。
+- 连通分组只隔离模板和相同序列化根状态，不保证定义族 OOD，也不排除所有语义等价
+  变体或祖先依赖共享；35目标引导之外的保留族仍需单独建立。

@@ -8,6 +8,7 @@ from pathlib import Path
 from metamath_generator.parser import parse
 from neural_prover.certificate import compile_certificate
 from neural_prover.environment import ProofState
+from neural_prover.data_contract import validate_checkpoint_tokenizer
 from neural_prover.latent_model import LatentProofTransformer
 from neural_prover.lemma import (
     LemmaActionGenerator,
@@ -142,11 +143,10 @@ def evaluate_htps(
     device = _device(device_name)
     database = parse(database_path)
     tokenizer = MetamathTokenizer.load(tokenizer_path)
-    model, _ = LatentProofTransformer.load_checkpoint(
+    model, payload = LatentProofTransformer.load_checkpoint(
         checkpoint, map_location=device
     )
-    if model.config.vocab_size != len(tokenizer):
-        raise ValueError("checkpoint and tokenizer vocabulary sizes differ")
+    validate_checkpoint_tokenizer(model, payload, tokenizer)
     records = _load_records(policy_corpus_path)[:limit]
     episodes: list[dict] = []
     certified = 0

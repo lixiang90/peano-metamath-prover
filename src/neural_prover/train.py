@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from .data import ProverExample, load_examples
 from .model import ProofTransformer, ProofTransformerConfig
 from .tokenizer import MetamathTokenizer
+from .data_contract import tokenizer_fingerprint, validate_checkpoint_tokenizer, validate_record_encoding
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +35,8 @@ class TrainingConfig:
     decoder_layers: int = 3
     dim_feedforward: int = 512
     dropout: float = 0.1
+    checkpoint: str | None = None
+    checkpoint_tokenizer: str | None = None
 
 
 class ProofDataset(Dataset):
@@ -202,6 +205,10 @@ def train_model(
     config: TrainingConfig | None = None,
 ) -> dict:
     cfg = config or TrainingConfig()
+    if cfg.epochs <= 0 or cfg.batch_size <= 0 or cfg.learning_rate <= 0:
+        raise ValueError("epochs, batch size and learning rate must be positive")
+    if bool(cfg.checkpoint) != bool(cfg.checkpoint_tokenizer):
+        raise ValueError("fine-tuning requires both checkpoint and checkpoint_tokenizer")
     _seed_everything(cfg.seed)
     corpus = Path(corpus_directory)
     output = Path(output_directory)
@@ -216,6 +223,11 @@ def train_model(
         raise ValueError("training corpus is empty")
     if not validation_examples:
         raise ValueError("validation corpus is empty")
+    fingerprint = tokenizer_fingerprint(tokenizer)
+    if manifest.get("tokenizer_sha256", fingerprint) != fingerprint:
+        raise ValueError("corpus tokenizer fingerprint mismatch")
+    for example in train_examples + validation_examples:
+        validate_record_encoding(example.to_record(), tokenizer)
     device = _device(cfg.device)
     model_cfg = ProofTransformerConfig(
         vocab_size=len(tokenizer),
@@ -235,8 +247,31 @@ def train_model(
             manifest["configuration"]["max_action_tokens"]
         ),
     )
-    model = ProofTransformer(model_cfg).to(device)
-    model.candidate_head_trained = cfg.candidate_loss_weight > 0
+    inherited_metadata = {}
+    if cfg.checkpoint:
+        checkpoint_tokenizer = MetamathTokenizer.load(cfg.checkpoint_tokenizer)
+        if tokenizer_fingerprint(checkpoint_tokenizer) != fingerprint:
+            raise ValueError("checkpoint tokenizer differs from corpus; generate with --base-tokenizer")
+        if Path(cfg.checkpoint).resolve() in {(output / name).resolve() for name in ("best.pt", "final.pt")}:
+            raise ValueError("choose a new output directory; do not overwrite the input checkpoint")
+        model, payload = ProofTransformer.load_checkpoint(cfg.checkpoint, map_location=device)
+        validate_checkpoint_tokenizer(model, payload, tokenizer)
+        model_cfg = model.config
+        inherited_metadata = payload.get("metadata", {})
+        if any(len(e.state_ids) > model_cfg.max_state_tokens or len(e.action_ids) > model_cfg.max_action_tokens
+               for e in train_examples + validation_examples):
+            raise ValueError("fine-tuning data exceeds checkpoint context limits; regenerate with smaller limits")
+    else:
+        model = ProofTransformer(model_cfg)
+    model = model.to(device)
+    model.candidate_head_trained = model.candidate_head_trained or cfg.candidate_loss_weight > 0
+    training_metadata = {
+        **inherited_metadata,
+        "tokenizer_sha256": fingerprint,
+        "tokenizer": str((corpus / "tokenizer.json").resolve()),
+        "initialization_checkpoint": str(Path(cfg.checkpoint).resolve()) if cfg.checkpoint else None,
+        "optimizer_restarted": bool(cfg.checkpoint),
+    }
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=cfg.learning_rate,
@@ -313,6 +348,7 @@ def train_model(
                 best_path,
                 optimizer_state=optimizer.state_dict(),
                 metadata={
+                    **training_metadata,
                     "epoch": epoch,
                     "validation": validation_metrics,
                     "tokenizer": str(
@@ -324,7 +360,7 @@ def train_model(
     model.save_checkpoint(
         final_path,
         optimizer_state=optimizer.state_dict(),
-        metadata={"epoch": cfg.epochs, "tokenizer": "tokenizer.json"},
+        metadata={**training_metadata, "epoch": cfg.epochs},
     )
     summary = {
         "format": "peano-proof-training-v1",
@@ -335,6 +371,7 @@ def train_model(
             else None
         ),
         "configuration": asdict(cfg),
+        "initialization": training_metadata,
         "model_configuration": asdict(model_cfg),
         "train_examples": len(train_examples),
         "validation_examples": len(validation_examples),

@@ -53,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     corpus.add_argument("--max-state-tokens", type=int, default=256)
     corpus.add_argument("--max-action-tokens", type=int, default=192)
     corpus.add_argument("--definition-catalog")
+    corpus.add_argument("--base-tokenizer")
     corpus.add_argument("--bootstrap-definitions", action="store_true")
     corpus.add_argument(
         "--definition-coverage-weight", type=float, default=0.0
@@ -118,6 +119,8 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--device", default="auto")
     train.add_argument("--d-model", type=int, default=128)
     train.add_argument("--layers", type=int, default=3)
+    train.add_argument("--checkpoint", help="fine-tune a base checkpoint with a new optimizer")
+    train.add_argument("--checkpoint-tokenizer", help="explicit tokenizer belonging to --checkpoint")
     train.add_argument(
         "--candidate-loss-weight", type=float, default=0.25
     )
@@ -416,6 +419,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.max_definition_only_search_per_predicate
                 ),
                 max_target_hints=args.max_target_hints,
+                base_tokenizer=args.base_tokenizer,
             ),
         )
         print(json.dumps(manifest["counts"], ensure_ascii=False))
@@ -461,6 +465,8 @@ def main(argv: list[str] | None = None) -> int:
                 candidate_loss_weight=args.candidate_loss_weight,
                 pa_plus_balanced_sampling=
                     not args.no_pa_plus_balanced_sampling,
+                checkpoint=args.checkpoint,
+                checkpoint_tokenizer=args.checkpoint_tokenizer,
             ),
         )
         print(json.dumps({
@@ -470,6 +476,8 @@ def main(argv: list[str] | None = None) -> int:
         }, ensure_ascii=False))
         return 0
     if args.command == "upgrade-pa-plus":
+        if Path(args.checkpoint).resolve() == Path(args.output_checkpoint).resolve() or Path(args.tokenizer).resolve() == Path(args.output_tokenizer).resolve():
+            raise ValueError("choose new output paths for the upgraded checkpoint and tokenizer")
         import torch
 
         from metamath_generator.definitions import load_definition_catalog
@@ -501,6 +509,8 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(
                 f"unsupported checkpoint format: {checkpoint_format}"
             )
+        from .data_contract import tokenizer_fingerprint, validate_checkpoint_tokenizer
+        validate_checkpoint_tokenizer(model, original, tokenizer)
         expansion = model.resize_vocabulary(len(upgraded))
         checkpoint_path = Path(args.output_checkpoint)
         tokenizer_path = Path(args.output_tokenizer)
@@ -509,6 +519,7 @@ def main(argv: list[str] | None = None) -> int:
         upgraded.save(tokenizer_path)
         metadata = dict(original.get("metadata", {}))
         metadata["pa_plus_vocabulary"] = expansion
+        metadata["tokenizer_sha256"] = tokenizer_fingerprint(upgraded)
         model.save_checkpoint(checkpoint_path, metadata=metadata)
         print(json.dumps({
             "checkpoint": str(checkpoint_path.resolve()),

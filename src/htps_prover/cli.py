@@ -7,6 +7,7 @@ from neural_prover.decomposed import initialize_latent_checkpoint
 from neural_prover.rl import ReplayBuffer
 
 from .forward import ForwardDAGConfig, build_forward_dag_dataset
+from .data import audit_forward_dataset
 from .hypergraph import HTPSConfig
 from .pipeline import ClosedLoopConfig, evaluate_htps, run_closed_loop
 from .training import (
@@ -64,6 +65,18 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--steps", type=int, default=5000)
     generate.add_argument("--seeds", default="7,11,19,23")
     generate.add_argument("--max-proof-depth", type=int, default=12)
+    generate.add_argument("--max-ast-depth", type=int, default=40)
+    generate.add_argument("--max-variables", type=int, default=16)
+    generate.add_argument("--max-state-tokens", type=int, default=384)
+    generate.add_argument("--max-action-tokens", type=int, default=256)
+    generate.add_argument("--definition-catalog")
+    generate.add_argument("--bootstrap-definitions", action="store_true")
+    generate.add_argument("--definition-coverage-weight", type=float, default=0.0)
+    generate.add_argument("--bounded-nat-max", type=int, default=-1)
+    generate.add_argument("--ground-instances-per-predicate", type=int, default=0)
+    generate.add_argument("--target-guidance-weight", type=float, default=0.0)
+    generate.add_argument("--max-definition-only-search-per-predicate", type=int, default=-1)
+    generate.add_argument("--max-target-hints", type=int, default=3)
     generate.add_argument(
         "--base-tokenizer",
         help="preserve all token IDs from an existing checkpoint tokenizer",
@@ -74,6 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
     initialize.add_argument("base_tokenizer")
     initialize.add_argument("output_checkpoint")
     initialize.add_argument("output_tokenizer")
+
+    audit = sub.add_parser("audit-data", help="replay every serialized policy/lemma action")
+    audit.add_argument("database")
+    audit.add_argument("directory")
+    audit.add_argument("--output")
 
     fresh = sub.add_parser(
         "init-model", help="create a fresh latent+lemma checkpoint"
@@ -101,6 +119,9 @@ def build_parser() -> argparse.ArgumentParser:
     sft.add_argument("--batch-size", type=int, default=8)
     sft.add_argument("--device", default="auto")
     sft.add_argument("--max-examples", type=int)
+    sft.add_argument("--learning-rate", type=float, default=2e-5)
+    sft.add_argument("--no-pa-plus-balanced-sampling", action="store_true")
+    sft.add_argument("--candidate-loss-weight", type=float, default=0.0)
 
     collect = sub.add_parser("collect", help="collect verified HTPS replay")
     collect.add_argument("checkpoint")
@@ -160,9 +181,26 @@ def main(argv: list[str] | None = None) -> None:
                 seeds=seeds,
                 steps_per_seed=args.steps,
                 max_proof_depth=args.max_proof_depth,
+                max_ast_depth=args.max_ast_depth,
+                max_variables=args.max_variables,
+                max_state_tokens=args.max_state_tokens,
+                max_action_tokens=args.max_action_tokens,
+                definition_catalog=args.definition_catalog,
+                bootstrap_definitions=args.bootstrap_definitions,
+                definition_coverage_weight=args.definition_coverage_weight,
+                bounded_nat_max=args.bounded_nat_max,
+                ground_instances_per_predicate=args.ground_instances_per_predicate,
+                target_guidance_weight=args.target_guidance_weight,
+                max_definition_only_search_per_predicate=args.max_definition_only_search_per_predicate,
+                max_target_hints=args.max_target_hints,
             ),
             base_tokenizer_path=args.base_tokenizer,
         ))
+    elif args.command == "audit-data":
+        result = audit_forward_dataset(args.database, args.directory, args.output)
+        _print(result)
+        if result["invalid_actions"]:
+            raise SystemExit(1)
     elif args.command == "init-latent":
         _print(initialize_latent_checkpoint(
             args.base_checkpoint,
@@ -199,6 +237,9 @@ def main(argv: list[str] | None = None) -> None:
                 batch_size=args.batch_size,
                 device=args.device,
                 max_examples=args.max_examples,
+                learning_rate=args.learning_rate,
+                pa_plus_balanced_sampling=not args.no_pa_plus_balanced_sampling,
+                candidate_loss_weight=args.candidate_loss_weight,
             ),
         ))
     elif args.command == "collect":

@@ -34,7 +34,8 @@ python -m pip install -e ".[neural,dev]"
 三个源码包、既有 CLI 和 checkpoint 文件路径均保留，不要求移动旧输出。
 模型必须搭配自己的 tokenizer；同样的符号集合不保证相同 token ID。基础模型转
 latent 用显式 `init-latent`；PA+ 词表扩容用 `upgrade-pa-plus`，输出到新路径。
-新增权重需要训练，且基础 `train` 没有加载升级 checkpoint 的微调参数。
+新增权重需要训练；基础 `train --checkpoint ... --checkpoint-tokenizer ...` 现可
+加载升级后的基础模型，以新优化器微调。模型结构取自 checkpoint，不用新建模型的默认值。
 旧 PA+ `legacy-unordered` 桥动作不能沿用，须按
 [认证记录](pa-plus-certification.md)重新生成、审计和训练。
 
@@ -43,16 +44,16 @@ latent 用显式 `init-latent`；PA+ 词表扩容用 `upgrade-pa-plus`，输出�
 | 能力 | 基础 / MCTS | HTPS | Scale |
 | --- | --- | --- | --- |
 | 共享 PA / 数论内核 | 已支持 | 已支持 | 已支持 |
-| PA+ 目录、定义桥、有界项、35目标引导生成 | `build-corpus` 已支持 | `generate` 尚未转接参数 | 模板生成尚未完整接入 |
-| 数据形式 | 单步动作语料 | 按递归证明骨架切分的 policy / lemma DAG 数据 | gzip 动作分片 |
-| 训练 | 动作/价值 + 可选批内候选损失 | latent 动作/价值/ponder；replay 候选训练 | 可恢复长上下文监督训练 |
+| PA+ 目录、定义桥、有界项、35目标引导生成 | `build-corpus` 已支持 | `generate` 已支持，自动全量动作审计 | 模板生成尚未完整接入 |
+| 数据形式 | 单步动作语料 | 按证明骨架与相同根状态连通分组的 policy / lemma 数据 | gzip 动作分片 |
+| 训练 | 动作/价值 + 可选批内候选损失；支持基础 checkpoint 微调 | latent 动作/价值/ponder、类型采样、可选批内候选损失；replay 候选训练 | 可恢复长上下文监督训练 |
 | 搜索回放 | MCTS 访问分布 + 价值 | 最小认证证明策略边 + 软 critic | 不是第三种搜索算法 |
 | 强制外部认证入口 | `evaluate` / `evaluate-mcts` | `evaluate` / `collect` / `closed-loop` | 训练诊断不等于证明认证 |
 
-PA+ 是共享形式层，不是某个后端专属功能。但合并分支不会自动完成数据适配：不能
+PA+ 是共享形式层，不是某个后端专属功能。两个生成入口现均已适配，但不能
 把基础 `train.jsonl` 直接替换 HTPS `policy_train.jsonl`，也不能把普通 checkpoint
-当作 latent checkpoint。HTPS 评估环境可按配套 tokenizer 配置 PA+ 桥；这与其
-forward 生成器尚未支持完整 PA+ 参数并不矛盾。
+当作 latent checkpoint。HTPS 从生成、审计、latent SFT 到评估均按配套 tokenizer
+配置 PA+。新增完整示例和实测见 [PA+ 数据与训练贯通](pa-plus-htps-training.md)。
 
 ## 3. PA+：生成、全量审计、小模型训练
 
@@ -121,7 +122,7 @@ MCTS 的 `collect-replay` / `reinforce`、中间引理与潜在模型升级示�
 
 以下显式使用小模型、CPU 和有限预算，验证新后端接口；不隐式启动约100M参数训练。
 HTPS `init-model` 默认更大，后续规模实验需显式确定资源与配置。基础库示例不启用
-尚未接入的 PA+ 生成参数。模型上下文较小时可能跳过长样本，应检查数据和训练报告。
+PA+ 生成参数；启用方法见上述专题。模型上下文较小时可能跳过长样本，应检查数据和训练报告。
 
 ```bash
 python -m htps_prover generate formal/peano.mm outputs/unified-htps/data \

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import random
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -12,6 +13,9 @@ from torch.nn import functional as F
 from metamath_generator.parser import parse
 from neural_prover.certificate import compile_certificate
 from neural_prover.environment import ProofState
+from neural_prover.data_contract import (
+    tokenizer_fingerprint, validate_checkpoint_tokenizer, validate_record_encoding,
+)
 from neural_prover.latent_model import (
     LatentProofTransformer,
     LatentReasoningConfig,
@@ -46,6 +50,8 @@ class SupervisedTrainConfig:
     seed: int = 7
     device: str = "auto"
     max_examples: int | None = None
+    pa_plus_balanced_sampling: bool = True
+    candidate_loss_weight: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +148,7 @@ def initialize_fresh_latent_model(
         destination,
         metadata={
             "initialization": "fresh-htps-latent-model",
+            "tokenizer_sha256": tokenizer_fingerprint(tokenizer),
             "configuration": asdict(cfg),
         },
     )
@@ -190,6 +197,12 @@ def train_supervised_latent(
     """Warm-start latent policy/value/lemma heads from forward DAGs."""
 
     cfg = config or SupervisedTrainConfig()
+    if cfg.epochs <= 0 or cfg.batch_size <= 0 or cfg.learning_rate <= 0:
+        raise ValueError("epochs, batch size and learning rate must be positive")
+    if cfg.candidate_loss_weight < 0 or (cfg.max_examples is not None and cfg.max_examples <= 0):
+        raise ValueError("invalid candidate weight or maximum examples")
+    if Path(checkpoint).resolve() == Path(output_checkpoint).resolve():
+        raise ValueError("choose a new checkpoint path; do not overwrite the input")
     random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
     device = _device(cfg.device)
@@ -197,16 +210,22 @@ def train_supervised_latent(
     model, payload = LatentProofTransformer.load_checkpoint(
         checkpoint, map_location=device
     )
-    if model.config.vocab_size != len(tokenizer):
-        raise ValueError("checkpoint and tokenizer vocabulary sizes differ")
+    validate_checkpoint_tokenizer(model, payload, tokenizer)
     records = _load_records(policy_path)
+    for item in records:
+        validate_record_encoding(item, tokenizer)
     if lemma_path is not None:
+        lemma_records = _load_records(lemma_path)
+        for item in lemma_records:
+            validate_record_encoding(item, tokenizer, lemma=True)
         records.extend({
+            **item,
             "state_ids": item["state_ids"],
             "action_ids": item["lemma_action_ids"],
             "value_target": item.get("utility_target", 0.5),
             "kind": "lemma",
-        } for item in _load_records(lemma_path))
+        } for item in lemma_records)
+    input_examples = len(records)
     records = [
         item for item in records
         if (
@@ -214,22 +233,29 @@ def train_supervised_latent(
             and len(item["action_ids"]) <= model.config.max_action_tokens
         )
     ]
+    filtered_length = input_examples - len(records)
     random.shuffle(records)
     if cfg.max_examples is not None:
         records = records[: cfg.max_examples]
     if not records:
         raise ValueError("no compatible supervised examples")
+    distribution = dict(Counter(item.get("generation_kind", "search") for item in records))
+    balanced = cfg.pa_plus_balanced_sampling and tokenizer.pa_plus_context.enabled
+    weights = {"source": 0.5, "definition_bridge": 0.75, "bounded_instance": 3.0, "search": 1.0}
     model.to(device).train()
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay
     )
     history: list[dict] = []
     for epoch in range(1, cfg.epochs + 1):
-        random.shuffle(records)
-        totals = {"loss": 0.0, "policy": 0.0, "value": 0.0, "ponder": 0.0}
+        epoch_records = (
+            random.choices(records, weights=[weights.get(r.get("generation_kind"), 1.0) for r in records], k=len(records))
+            if balanced else random.sample(records, len(records))
+        )
+        totals = {"loss": 0.0, "policy": 0.0, "value": 0.0, "ponder": 0.0, "candidate": 0.0}
         batches = 0
-        for start in range(0, len(records), cfg.batch_size):
-            batch = records[start : start + cfg.batch_size]
+        for start in range(0, len(epoch_records), cfg.batch_size):
+            batch = epoch_records[start : start + cfg.batch_size]
             states = _pad(
                 [list(item["state_ids"]) for item in batch],
                 tokenizer.pad_id,
@@ -253,6 +279,15 @@ def train_supervised_latent(
                 targets,
                 LatentLossConfig(value_weight=cfg.value_weight),
             )
+            candidate_loss = loss.new_zeros(())
+            if cfg.candidate_loss_weight > 0:
+                scores, _ = model.score_candidate_matrix(states, actions)
+                positives = actions[:, None, :].eq(actions[None, :, :]).all(dim=-1)
+                candidate_loss = -(
+                    torch.logsumexp(scores.masked_fill(~positives, float("-inf")), dim=1)
+                    - torch.logsumexp(scores, dim=1)
+                ).mean()
+                loss = loss + cfg.candidate_loss_weight * candidate_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.gradient_clip)
             optimizer.step()
@@ -260,22 +295,29 @@ def train_supervised_latent(
             totals["policy"] += float(parts["policy_loss"].detach())
             totals["value"] += float(parts["value_loss"].detach())
             totals["ponder"] += float(parts["ponder_loss"].detach())
+            totals["candidate"] += float(candidate_loss.detach())
             batches += 1
         history.append({
             "epoch": epoch,
+            "sampled_generation_kinds": dict(Counter(r.get("generation_kind", "search") for r in epoch_records)),
             **{key: value / max(1, batches) for key, value in totals.items()},
         })
     destination = Path(output_checkpoint)
+    model.candidate_head_trained = model.candidate_head_trained or cfg.candidate_loss_weight > 0
     destination.parent.mkdir(parents=True, exist_ok=True)
     model.save_checkpoint(
         destination,
         optimizer_state=optimizer.state_dict(),
         metadata={
             **payload.get("metadata", {}),
+            "tokenizer_sha256": tokenizer_fingerprint(tokenizer),
             "htps_supervised": {
                 "configuration": asdict(cfg),
                 "examples": len(records),
                 "history": history,
+                "generation_kinds": distribution,
+                "balanced_sampling": balanced,
+                "candidate_loss_scope": "in-batch multi-positive, not kernel-legal candidate accuracy",
             },
         },
     )
@@ -283,6 +325,12 @@ def train_supervised_latent(
         "checkpoint": str(destination.resolve()),
         "device": str(device),
         "examples": len(records),
+        "input_examples": input_examples,
+        "filtered_length": filtered_length,
+        "generation_kinds": distribution,
+        "lemma_examples": sum(r.get("kind") == "lemma" for r in records),
+        "balanced_sampling": balanced,
+        "tokenizer_sha256": tokenizer_fingerprint(tokenizer),
         "history": history,
     }
 
@@ -413,12 +461,11 @@ def collect_htps_replay(
     device = _device(cfg.device)
     database = parse(database_path)
     tokenizer = MetamathTokenizer.load(tokenizer_path)
-    model, _ = LatentProofTransformer.load_checkpoint(
+    model, payload = LatentProofTransformer.load_checkpoint(
         checkpoint, map_location=device
     )
     model.to(device)
-    if model.config.vocab_size != len(tokenizer):
-        raise ValueError("checkpoint and tokenizer vocabulary sizes differ")
+    validate_checkpoint_tokenizer(model, payload, tokenizer)
     records = _load_records(policy_corpus_path)
     random.shuffle(records)
     records = records[: cfg.examples]
