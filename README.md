@@ -4,6 +4,67 @@
 Beta：神经网络和搜索器只能提出候选动作，成功证明必须能够编译并由项目内
 验证器重放；重要结果还应使用外部 Metamath 实现交叉验证。
 
+## `htps` 分支：超图搜索与扩展 PA+
+
+本节于 2026-09-04 按 `htps` 提交 `eefcd09` 核对。`main` 保留基础神经符号证明、
+MCTS、中间引理和连续潜在思维原型；后续 HTPS 与生成式 PA+ 开发集中在同一仓库的
+[`htps` 分支](https://github.com/lixiang90/peano-metamath-prover/tree/htps)。这些新增
+实现尚未合并到 `main`，不是必须安装的外部项目，也不依赖相邻副本文件夹。
+
+### 相对 `main` 增加了什么
+
+- **HTPS 搜索与训练**：`src/htps_prover/` 提供共享目标节点的 AND/OR 超图搜索、
+  PUCT、软 critic 回传，以及先证明中间引理再使用它的受保护超边；前向证明 DAG
+  按递归证明骨架分割训练/评估数据，并提供 latent 监督训练与同步搜索/replay 闭环。
+- **扩展 PA+ 形式库**：新增 `formal/peano-pa-plus.mm` 与可编辑 JSON 定义目录，
+  包含68个保守高层关系和35个非逻辑 `statement` 目标，覆盖数论、有限递推、
+  整数/有理数及初等分析证书。目标公式不是公理，也不是已证明定理。
+- **定理生成**：从定义机械构造136条可重放的展开/折叠桥，加入有界自然数实例、
+  35目标结构引导和单定义包装配额。目标仅用于采样启发式，不能充当证明前提。
+- **基础神经管线适配**：新增 PA+ 上下文、目标标签提示、类型化绑定槽位、批内
+  候选对比损失和分类型加权采样；推理可使用定义桥与有界项，证书将桥内联回源库
+  规则。旧 checkpoint 可追加式扩容词表，但新增权重仍需训练。
+
+### 已验证到什么程度
+
+2026-08-31 在本地 RTX 3060 Laptop GPU 上用616例 PA+ 语料、64维双层
+encoder/decoder 模型训练3轮，验证损失从5.9908降至3.8880。一个定义桥实例经
+混合搜索一步闭合，导出的33标签证书通过项目内核与官方 Metamath 双验证。
+截至本节核对时，分支的81项回归测试通过。
+
+这些是工程验证，不是35目标解题实验，也不是百万级 PA+ 或 latent/HTPS 训练。
+该小模型仍把正确桥排在17个候选的第14位，尚不能宣称神经证明能力提升。下方
+“当前进展”中的 RTX 5090、1.1M 数据结果属于较早的数论库/Scale 实验，不能当成
+扩展 PA+ 或 HTPS 的性能证据。
+
+当前还需注意：HTPS 评估仅自动调用项目内验证器，外部强制验证尚未接入；PA+
+生成桥尚未接通通用语料审计和 Scale 模板解析，目录/有界实例参数也尚未接入
+`peano-htps generate`。正式 PA+ 四策略对照还须统一各策略的定义桥、有界项和
+候选枚举配置，避免把不同搜索环境带来的增益误归因于模型。
+
+### 如何使用与查阅
+
+保存或提交本地改动后，在仓库根目录切换分支；建议使用独立 Python 虚拟环境：
+
+```bash
+git fetch origin
+git switch htps
+python -m pip install -e ".[neural,dev]"
+peano-htps --help
+python -m neural_prover build-corpus --help
+```
+
+上述新增命令与 PA+ 参数必须在 `htps` 分支使用。checkpoint、训练数据和 `outputs/`
+不会随 Git 分发；旧模型须配套原 tokenizer，并按分支文档执行显式升级，不能
+任意混用 token ID。详细说明使用跨分支链接，避免在 `main` 指向不存在的文件：
+
+- [HTPS 分支 README 与快速开始](https://github.com/lixiang90/peano-metamath-prover/blob/htps/README.md)
+- [HTPS 数据、训练、搜索与限制](https://github.com/lixiang90/peano-metamath-prover/blob/htps/docs/htps-design.md)
+- [PA+ 保守定义与表达边界](https://github.com/lixiang90/peano-metamath-prover/blob/htps/docs/pa-plus-definitions.md)
+- [PA+ 随机定理生成](https://github.com/lixiang90/peano-metamath-prover/blob/htps/docs/pa-plus-random-generation.md)
+- [PA+ 神经训练、本地验证与未接通接口](https://github.com/lixiang90/peano-metamath-prover/blob/htps/docs/pa-plus-neural-training.md)
+- [分支当前进展与研究路线](https://github.com/lixiang90/peano-metamath-prover/blob/htps/docs/progress-and-roadmap.md)
+
 ## 特性
 
 - 严格区分语法规则和逻辑断言：
