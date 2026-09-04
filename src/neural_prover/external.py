@@ -9,6 +9,8 @@ import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from metamath_generator.database import TheoremDatabase
+from metamath_generator.export import export_metamath
 from metamath_generator.model import Theorem
 from metamath_generator.parser import parse
 
@@ -36,13 +38,13 @@ class ExternalVerificationResult:
 
 
 def discover_metamath_executable(configured: str | Path | None = None) -> str | None:
-    candidates = []
-    if configured:
-        candidates.append(str(configured))
     environment = os.environ.get("METAMATH_EXECUTABLE")
-    if environment:
-        candidates.append(environment)
-    candidates.extend(("metamath", "metamath-exe", "metamath.exe"))
+    # An explicit missing executable must not silently select a different one.
+    candidates = (
+        [str(configured)] if configured else
+        [environment] if environment else
+        ["metamath", "metamath-exe", "metamath.exe"]
+    )
     for candidate in candidates:
         resolved = shutil.which(candidate)
         if resolved:
@@ -100,6 +102,17 @@ def verify_certificate_external(
     if not source.is_file():
         raise FileNotFoundError(source)
     verifier = Path(resolved)
+    if certificate.proof is None or not certificate.proof.source_labels:
+        return ExternalVerificationResult(
+            "error",
+            str(verifier),
+            _sha256(verifier) if verifier.is_file() else None,
+            None,
+            0.0,
+            "certificate has no flattened source_labels; "
+            "use verify_generated_dag_external for generator DAGs",
+            (str(verifier),),
+        )
     ambient_database = parse(source)
     import time
 
@@ -115,6 +128,84 @@ def verify_certificate_external(
                 fragment,
                 ambient_database=ambient_database,
             )
+            combined.write_text(
+                (root / source.name).read_text(encoding="utf-8")
+                + "\n"
+                + fragment.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            command = (str(verifier), str(combined))
+            completed = subprocess.run(
+                command,
+                input="set scroll continuous\nverify proof *\nexit\n",
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                cwd=root,
+                timeout=timeout_seconds,
+                check=False,
+            )
+            output = completed.stdout or ""
+            passed = completed.returncode == 0 and _successful_output(output)
+            return ExternalVerificationResult(
+                "passed" if passed else "failed",
+                str(verifier),
+                _sha256(verifier),
+                completed.returncode,
+                time.perf_counter() - started,
+                output[-8000:],
+                command,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return ExternalVerificationResult(
+            "error",
+            str(verifier),
+            _sha256(verifier) if verifier.is_file() else None,
+            None,
+            time.perf_counter() - started,
+            str(exc),
+            (str(verifier),),
+        )
+
+
+def verify_generated_dag_external(
+    theorem: Theorem,
+    store: TheoremDatabase,
+    database_path: str | Path,
+    *,
+    executable: str | Path | None = None,
+    timeout_seconds: float = 60.0,
+) -> ExternalVerificationResult:
+    """Export and verify a random-generator proof DAG with C Metamath.
+
+    Generated objects carry parent ids and substitutions, unlike neural-search
+    certificates whose proofs are already flattened to ``source_labels``.
+    Keeping separate entry points prevents silently exporting an empty proof.
+    """
+
+    resolved = discover_metamath_executable(executable)
+    if resolved is None:
+        return ExternalVerificationResult(
+            "not_configured", None, None, None, 0.0, ""
+        )
+    source = Path(database_path).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    verifier = Path(resolved)
+    import time
+
+    started = time.perf_counter()
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="peano-metamath-dag-external-"
+        ) as raw:
+            root = Path(raw) / "formal"
+            shutil.copytree(source.parent, root)
+            fragment = root / "generated.fragment.mm"
+            export_metamath(theorem, store, fragment)
+            combined = root / f"external-{source.name}"
             combined.write_text(
                 (root / source.name).read_text(encoding="utf-8")
                 + "\n"

@@ -62,6 +62,10 @@ class LemmaBackwardEnvironment(BackwardEnvironment):
             tuple[ProofState, Tactic], Transition
         ] = {}
 
+    def configure_from_tokenizer(self, tokenizer, *, target_guidance: bool = True):
+        super().configure_from_tokenizer(tokenizer, target_guidance=target_guidance)
+        self._lemma_transition_cache.clear()
+
     @staticmethod
     def _normalize_commits(state: ProofState) -> ProofState:
         hypotheses = list(state.hypotheses)
@@ -150,6 +154,7 @@ class LemmaBackwardEnvironment(BackwardEnvironment):
                     normalized,
                     raw.generated_goals,
                     raw.resolved_substitution,
+                    raw.assertion,
                 )
             )
         self._lemma_transition_cache[key] = transition

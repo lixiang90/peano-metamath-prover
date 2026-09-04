@@ -39,6 +39,7 @@ def quality_theorem_record(
         ),
         "bare_conclusion": assessment.bare_conclusion,
         "arithmetic_operators": list(assessment.arithmetic_operators),
+        "defined_predicates": list(assessment.defined_predicates),
         "source_equivalent": assessment.source_equivalent,
         # This is a comparison/reporting key, not a replacement theorem.
         "normalized_conclusion": assessment.normalized_conclusion,
@@ -80,11 +81,31 @@ def export_datasets(
             {
                 "attempts": summary.attempts,
                 "stored": summary.stored,
+                "search_stored": summary.search_stored,
+                "definition_bridges": summary.definition_bridges,
+                "bounded_ground_instances":
+                    summary.bounded_ground_instances,
+                "definition_only_search_admitted":
+                    summary.definition_only_search_admitted,
                 "active": summary.active,
                 "dominated": summary.dominated,
                 "categories": summary.categories,
                 "rejected": summary.rejected,
                 "rule_usage": summary.rule_usage,
+                "definition_coverage": {
+                    "total": summary.definition_predicates_total,
+                    "seen": summary.definition_predicates_seen,
+                    "ratio": summary.definition_coverage,
+                    "usage": summary.definition_usage,
+                },
+                "target_guidance": {
+                    "total": summary.target_statements_total,
+                    "touched_at_similarity_0_25":
+                        summary.target_statements_touched,
+                    "mean_best_similarity":
+                        summary.target_mean_best_similarity,
+                    "best_similarity": summary.target_best_similarity,
+                },
                 "configuration": {
                     "full_discharge_probability":
                         generator.config.full_discharge_probability,
@@ -94,6 +115,20 @@ def export_datasets(
                         generator.config.max_consecutive_alpha,
                     "reject_vacuous_quantifiers":
                         generator.config.quality.reject_vacuous_quantifiers,
+                    "bootstrap_definitions":
+                        generator.config.bootstrap_definitions,
+                    "definition_coverage_weight":
+                        generator.config.definition_coverage_weight,
+                    "compatible_candidate_filter":
+                        generator.config.compatible_candidate_filter,
+                    "bounded_nat_max": generator.config.bounded_nat_max,
+                    "ground_instances_per_predicate":
+                        generator.config.ground_instances_per_predicate,
+                    "target_guidance_weight":
+                        generator.config.target_guidance_weight,
+                    "max_definition_only_search_per_predicate": (
+                        generator.config.max_definition_only_search_per_predicate
+                    ),
                 },
             },
             ensure_ascii=False,

@@ -5,6 +5,14 @@ the first fixed-budget P0-P2 comparison on its checkpoint.  It separates
 teacher-forced prediction, internally certified search, and independent
 Metamath verification.
 
+Historical report, retained during the 2026-09-04 documentation review. This is
+the number-theory/Scale run, not training on the later PA+ definitions. Its P3
+deferral is a research acceptance recommendation; latent/HTPS engineering
+prototypes are already present. Current implementation status and the separate
+small PA+ experiment are in the [roadmap](progress-and-roadmap.md) and
+[PA+ neural training notes](pa-plus-neural-training.md). Remote paths below are
+historical artifact locations, not a claim that the rented GPU remains active.
+
 ## Artifacts
 
 The remote experiment root is

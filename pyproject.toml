@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "peano-metamath-prover"
-version = "0.9.0"
-description = "A typed theorem generator and neural-symbolic prover for peano.mm"
+version = "0.1.0"
+description = "Verified PA+ theorem generation and neural-symbolic proving with MCTS and HTPS"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-only"
@@ -26,13 +26,16 @@ dev = ["pytest>=8"]
 [project.scripts]
 metamath-generate = "metamath_generator.cli:main"
 peano-neural-prover = "neural_prover.cli:main"
+peano-htps = "htps_prover.cli:main"
+pa-plus-compile = "metamath_generator.definitions:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["metamath_generator*", "neural_prover*"]
+include = ["metamath_generator*", "neural_prover*", "htps_prover*"]
 
 [tool.setuptools.data-files]
-"share/peano-metamath-prover/formal" = ["formal/*.mm"]
+"share/peano-metamath-prover" = ["README.md", "README-zh.md", "CONTRIBUTING.md", "LICENSE", "NOTICE"]
+"share/peano-metamath-prover/formal" = ["formal/*.mm", "formal/*.json"]
 "share/peano-metamath-prover/docs" = ["docs/*.md"]
 
 [tool.pytest.ini_options]

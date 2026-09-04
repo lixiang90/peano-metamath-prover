@@ -6,11 +6,12 @@ from .data import (
     build_corpus,
     load_examples,
 )
-from .tokenizer import MetamathTokenizer, TokenizerConfig
+from .tokenizer import MetamathTokenizer, PAPlusTokenizerContext, TokenizerConfig
 
 __all__ = [
     "CorpusBuildConfig",
     "MetamathTokenizer",
+    "PAPlusTokenizerContext",
     "ProverExample",
     "TokenizerConfig",
     "build_corpus",

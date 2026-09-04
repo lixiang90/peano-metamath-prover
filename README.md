@@ -3,364 +3,164 @@
 
 # Peano Metamath Prover
 
-A strictly typed theorem generator and neural-symbolic prover for `peano.mm`.
-The project is currently in beta: neural networks and search algorithms may
-only propose candidate actions. A successful proof must compile into a
-certificate that the project verifier can replay. Important results should
-also be cross-checked with an external Metamath implementation.
+A research toolkit for synthetic theorem generation and neural-symbolic proving over
+Peano arithmetic and conservative PA+ definitions. Training data comes from constructed
+formal proofs, not natural-language reasoning traces. Neural models propose or rank
+actions; the symbolic kernel checks them and replays the final Metamath certificate.
 
-## The `htps` branch: hypergraph search and extended PA+
+PA+, MCTS, HTPS, intermediate lemmas, and continuous latent reasoning are maintained
+together on `main`. No algorithm-specific branch or separate HTPS installation is needed.
+This is a Beta research system: the pipelines work, but improved theorem-solving ability
+from learning has not yet been established.
 
-This section was checked on 2026-09-04 against `htps` commit `eefcd09`.
-`main` retains the base neural-symbolic prover, MCTS, intermediate lemmas, and
-the continuous latent reasoning prototype. Subsequent HTPS and generated PA+
-development lives on the
-[`htps` branch](https://github.com/lixiang90/peano-metamath-prover/tree/htps)
-of this same repository. These additions have not been merged into `main`;
-they are not a separate external dependency and do not require a neighboring
-copy of the project.
+## 1. What the system contains
 
-### What it adds to `main`
+| Layer | Implementation | Role |
+| --- | --- | --- |
+| Shared formal system | `formal/`, `metamath_generator` | PA / number theory / PA+; parsing, unification, types, `$d`, proof construction |
+| Synthetic data | `metamath_generator`, `htps_prover.forward` | Quality-filtered theorems, bounded instances, definition bridges, proof DAG datasets |
+| Models and training | `neural_prover`, `htps_prover.training` | Symbolic tokens, policy/value heads, optional lemma actions and continuous latent computation |
+| Search backends | `neural_prover`, `htps_prover.hypergraph` | Best-first / PUCT-MCTS over multi-goal states, or HTPS over shared AND/OR goal nodes |
+| Certification | Shared environment and certificate verifier | Replay against the source library; optional mandatory external Metamath verification |
 
-- **HTPS search and training:** `src/htps_prover/` provides AND/OR hypergraph
-  search with shared goal nodes, PUCT, soft critic backups, and guarded
-  hyperedges that require an intermediate lemma to be proved before use.
-  Forward proof DAGs are split into training and evaluation sets by recursive
-  proof skeleton. Latent supervised training and a synchronous search/replay
-  loop are also available.
-- **Extended PA+ formal library:** `formal/peano-pa-plus.mm` and an editable
-  JSON definition catalog add 68 conservative high-level relations and 35
-  non-logical `statement` goals, covering number theory, finite recurrences,
-  integers/rationals, and elementary analysis certificates. Goal formulas are
-  neither axioms nor proved theorems.
-- **Theorem generation:** 136 replayable unfolding/folding bridges are
-  mechanically derived from definitions, with bounded natural-number
-  instances, structural guidance from 35 goals, and quotas on single-definition
-  wrappers. Goals are sampling hints only, never proof premises.
-- **Base neural pipeline integration:** PA+ context, goal-label hints, typed
-  binding slots, an in-batch candidate contrastive loss, and weighted sampling
-  by generation type. Inference can use definition bridges and bounded terms;
-  certificates inline the bridges back into source-library rules. Existing
-  checkpoints support append-only vocabulary expansion, but new weights still
-  need training.
+MCTS and HTPS share mathematical semantics, but are not just different numeric parameters:
+their search structures and replay targets differ. Existing CLI and dataset formats remain
+separate selectable workflows. PA+ catalog-driven generation is wired into `build-corpus`;
+it is **not yet wired into HTPS `generate` or the full Scale generator**. See the
+[workflow guide](docs/training-and-evaluation.md) for the integration matrix and commands.
 
-### What has been validated
+## 2. Formal scope and trust
 
-On 2026-08-31, a local RTX 3060 Laptop GPU trained a 64-dimensional model with
-two encoder and two decoder layers for three epochs on 616 PA+ examples.
-Validation loss decreased from 5.9908 to 3.8880. Hybrid search closed one
-definition-bridge instance in a single step; its exported 33-label certificate
-passed both the project kernel and official Metamath verification. All 81
-regression tests on the branch passed as of this review.
+The libraries form a hierarchy:
 
-These are engineering checks, not a 35-goal proving experiment or
-million-example PA+ or latent/HTPS training. The small model still ranked the
-correct bridge 14th out of 17 candidates, so improved neural proving ability
-has not been established. The RTX 5090 and 1.1M-example results under
-"Current progress" below come from the earlier number-theory/Scale experiment;
-they are not performance evidence for extended PA+ or HTPS.
+- `formal/peano.mm`: the base Peano arithmetic library.
+- `formal/peano-number-theory.mm`: conservative number-theory definitions and named targets.
+- `formal/peano-pa-plus.mm`: 68 additional high-level definitions and 35 closed target
+  formulas, generated from `formal/pa-plus-definitions.json`.
 
-Current limitations also matter: HTPS evaluation automatically runs only the
-project verifier; mandatory external verification is not yet wired in. PA+
-generated bridges are not yet supported by the general corpus-audit and Scale
-template-parsing paths, and catalog/bounded-instance options are not yet
-available in `peano-htps generate`. A formal four-policy PA+ comparison must
-first give every policy the same definition bridges, bounded terms, and
-candidate-enumeration settings, so differences in search environments are not
-mistaken for model improvements.
+PA+ covers arithmetic relations, finite recurrences, integers/rationals, and finite
+certificates for elementary analysis. It is not a general real-analysis library.
+`statement` names a formula without asserting it: the 35 targets are neither extra axioms
+nor a list of solved theorems. Target-guided sampling does not prove its targets.
 
-### Usage and documentation
+Definition compilation checks dependencies, free variables, and freshness constraints.
+The 136 fold/unfold bridges are proof-backed search macros, inlined into source-library
+rules in the final certificate. Proposed lemmas must be proved before use; latent vectors
+never create facts. See [PA+ definitions](docs/pa-plus-definitions.md) and
+[architecture](docs/architecture.md).
 
-Save or commit local changes before switching branches from the repository
-root. A separate Python virtual environment is recommended:
+The project verifier currently supports uncompressed proofs. Important results should
+also pass an external Metamath implementation. A neural score, a solved search node, or
+high token accuracy is not a proof.
 
-```bash
-git fetch origin
-git switch htps
-python -m pip install -e ".[neural,dev]"
-peano-htps --help
-python -m neural_prover build-corpus --help
-```
+## 3. Install and run
 
-These additional commands and PA+ options require the `htps` branch.
-Checkpoints, training data, and `outputs/` are not distributed through Git.
-Existing models must remain paired with their original tokenizers and use the
-explicit upgrades described in the branch documentation; token IDs cannot be
-mixed arbitrarily. The links below point across branches to avoid referencing
-files that do not exist on `main`:
-
-- [HTPS branch README and quick start](https://github.com/lixiang90/peano-metamath-prover/blob/htps/README.md)
-- [HTPS data, training, search, and limitations](https://github.com/lixiang90/peano-metamath-prover/blob/htps/docs/htps-design.md)
-- [PA+ conservative definitions and expressive scope](https://github.com/lixiang90/peano-metamath-prover/blob/htps/docs/pa-plus-definitions.md)
-- [PA+ random theorem generation](https://github.com/lixiang90/peano-metamath-prover/blob/htps/docs/pa-plus-random-generation.md)
-- [PA+ neural training, local validation, and integration gaps](https://github.com/lixiang90/peano-metamath-prover/blob/htps/docs/pa-plus-neural-training.md)
-- [Branch progress and research roadmap](https://github.com/lixiang90/peano-metamath-prover/blob/htps/docs/progress-and-roadmap.md)
-
-## Features
-
-- A strict separation between syntax rules and logical assertions:
-  - `term`, `wff`, `BINOP`, and similar rules only construct and type-check ASTs.
-  - Only assertions whose conclusions start with `|-` may participate in proof
-    composition.
-- A uniform `Γ ⊢ C` representation supporting partial premise discharge and
-  open proof states.
-- First-order unification, occurs checks, exact type checking, and Metamath
-  `$d` constraints.
-- Vacuous-quantifier filtering, premise subsumption, duplicate detection, and
-  quality scoring based on mathematical structure.
-- An encoder-decoder Transformer policy/value model using atomic formal tokens.
-- A structured policy head that scores a finite set of kernel-valid candidates.
-- Verifiable intermediate-lemma cut actions: prove a lemma first, then use it
-  to reach the final goal.
-- Optional implicit continuous-vector reasoning and a learned halting head,
-  with compatibility for existing model files and checkpoints.
-- Hybrid search combining traditional action enumeration, auxiliary-lemma
-  construction, and PUCT/MCTS.
-- AlphaZero-style MCTS replay; exhausted search budgets are treated as censored
-  outcomes rather than fabricated negative rewards.
-- Resumable million-example generation in gzip shards, plus approximately 100M
-  parameter training with 2,304-token contexts.
-- Uncompressed Metamath proof export, project-kernel replay, and external
-  Metamath cross-verification.
-
-## Repository layout
-
-```text
-formal/                  peano.mm and conservative number-theory definitions
-src/metamath_generator/  Parsing, unification, composition, quality control, export
-src/neural_prover/       Transformer, MCTS, Scale data and training
-tests/                   Kernel, number-theory, and neural-symbolic regression tests
-docs/                    Architecture, number-theory definitions, Scale experiments
-```
-
-Training data, model checkpoints, and experiment outputs are not committed to
-Git. They are written to `outputs/` by default.
-
-## Current progress
-
-As of 2026-08-24, the project had completed a 1.1M-example dataset, 10,000
-training steps for a GPT-2 Small-class model, and its first fixed-budget
-closed-loop evaluation:
-
-- Generated 1,100,000 replayable action examples, split into
-  1,080,000/10,000/10,000 training/validation/test examples.
-- A random audit replayed 10,000/10,000 sampled actions successfully in the
-  project symbolic environment.
-- Trained a 105,312,496-parameter model on an RTX 5090 for 10,000 optimizer
-  steps, consuming 80,000 examples and approximately 73.04 million target tokens.
-- On 5,000 held-out examples, teacher-forced token accuracy was 92.26%, while
-  exact reference-action accuracy remained zero.
-- On nine fixed research goals with equal search budgets, the
-  uniform/heuristic/neural/hybrid policies certified 0/9, 4/9, 0/9, and 3/9
-  goals respectively. All seven successful certificates passed official
-  Metamath verification.
-- Updating the candidate head from 50 verifiable replay records did not
-  improve solve rate, but reduced pure-neural search time from 147.4 to 63.6
-  seconds, a 2.32× speedup.
-
-These results demonstrate an operational engineering loop spanning
-million-example data, a 100M-class model, long contexts, candidate scoring,
-MCTS replay, and dual verification. They **do not establish that the learned
-policy improves proving ability**. Pure-neural search solved no goals in this
-small sample, so the P1/P2 solve-rate acceptance criteria remain unmet. The
-next step is to expand replay and complete the formal evaluation on 37
-leakage-eligible goals with three seeds.
-
-## Installation
-
-For the symbolic generator only:
+Use Python 3.10+ from the repository root. Symbolic generation needs no PyTorch:
 
 ```bash
 python -m pip install -e .
-```
-
-For Transformer training and GPU inference:
-
-```bash
-python -m pip install -e ".[neural]"
-```
-
-For development and testing:
-
-```bash
-python -m pip install -e ".[dev]"
-python -m pytest
-```
-
-## Quick start
-
-Generate quality-filtered theorems, inference rules, and open proof states:
-
-```bash
 python -m metamath_generator formal/peano.mm \
-  --mode random --steps 5000 --seed 7 \
-  --output-dir outputs/generated
+  --mode random --steps 100 --seed 7 --output-dir outputs/smoke
 ```
 
-Outputs include:
-
-- `closed_theorems.jsonl`
-- `inference_rules.jsonl`
-- `proof_states.jsonl`
-- `quality_summary.json`
-
-Build a strictly typed neural-policy corpus:
+For neural training and the complete Python test suite:
 
 ```bash
-python -m neural_prover build-corpus \
-  formal/peano-number-theory.mm outputs/corpus \
-  --seeds 7,11,19,23 --steps-per-seed 5000 \
-  --max-state-tokens 384 --max-action-tokens 384
-
-python -m neural_prover audit-corpus \
-  formal/peano-number-theory.mm outputs/corpus \
-  --output outputs/corpus/audit.json
+python -m pip install -e ".[neural,dev]"
+python -m unittest discover -s tests
 ```
 
-Build a deduplicated million-example sharded corpus:
+If PyTorch is already installed, no reinstall is needed for source-tree testing:
+
+```powershell
+$env:PYTHONPATH='src'
+python -m unittest discover -s tests
+```
+
+Bash examples use `\` for line continuation; in PowerShell use a backtick or a single line.
+External-verifier integration tests require a separate Metamath executable; a skipped test
+does not establish external certification. These tests do not start GPU training.
+Outputs and checkpoints are ignored by Git.
+
+Try shared PA+ generation with bounded natural numbers and target guidance:
 
 ```bash
-python -m neural_prover build-scale-corpus \
-  formal/peano-number-theory.mm outputs/corpus outputs/scale-1m \
-  --train-examples 990000 --validation-examples 5000 \
-  --test-examples 5000 --shard-size 20000 \
-  --max-state-tokens 2304 --max-action-tokens 2304 --workers 8
-
-python -m neural_prover audit-scale-corpus \
-  formal/peano-number-theory.mm outputs/scale-1m \
-  --sample-size 1000 --output outputs/scale-1m/audit.json
+python -m metamath_generator formal/peano-pa-plus.mm \
+  --mode random --steps 1000 --seed 7 \
+  --definition-catalog formal/pa-plus-definitions.json \
+  --bootstrap-definitions --definition-coverage-weight 3 \
+  --bounded-nat-max 2 --ground-instances-per-predicate 1 \
+  --target-guidance-weight 4 --max-definition-only-search-per-predicate 1 \
+  --output-dir outputs/pa-plus-guided
 ```
 
-Train an approximately 104M-parameter model with 2,304-token contexts:
+Outputs include `closed_theorems.jsonl`, `inference_rules.jsonl`, `proof_states.jsonl`, and
+quality reports. Continue with [training and evaluation](docs/training-and-evaluation.md)
+for PA+ corpus audit/training, MCTS baselines, or HTPS supervised/closed-loop experiments.
 
-```bash
-python -m neural_prover train-scale \
-  outputs/scale-1m outputs/model-104m \
-  --max-steps 1000 --micro-batch-size 1 \
-  --gradient-accumulation-steps 4 \
-  --initial-context-tokens 512 --context-warmup-steps 50 \
-  --checkpoint-every 250 --device cuda
-```
+## 4. Evaluation and current evidence
 
-Further reading:
+The primary metric is certified solve rate under a stated compute budget, not action-token
+accuracy. Keep reference proofs out of search inputs and check training overlap. Compare
+uniform, heuristic, neural, and hybrid policies with the same goals, permitted rules,
+seeds, and budgets; report certificate status and environment fingerprints. Equal
+MCTS/HTPS simulation counts are not equal compute budgets.
 
-- [System architecture](docs/architecture.md)
-- [Conservative number-theory definitions](docs/number-theory.md)
-- [First million-example training and depth experiment](docs/first-large-scale-run.md)
-- [First RTX 5090 scale training and closed-loop experiment](docs/first-rtx5090-closed-loop-run.md)
-- [Intermediate lemmas and continuous latent reasoning](docs/lemma-and-latent-reasoning.md)
-- [Current progress and research roadmap](docs/progress-and-roadmap.md)
-- [Historical Scale baseline](docs/scale-baseline.md)
+`neural_prover evaluate` / `evaluate-mcts` and HTPS `evaluate` / `collect` / `closed-loop`
+support `--external-verifier /path/to/metamath --require-external-verification`.
+When required, missing, failed, timed-out, or ambiguous external verification does not
+count as certified. Keep `internal_only` and `internal+external` results separate.
+Generation guidance, model target hints, and inference ordering have separate ablations;
+see [certification and fair evaluation](docs/pa-plus-certification.md).
 
-## Next stage: closed-loop proving
+Evidence as of 2026-09-04:
 
-The engineering paths for P0 trustworthy evaluation, P1 finite-candidate
-policy scoring, and P2 AlphaZero replay are implemented. Formal research
-acceptance still requires three-seed experiments on a fixed benchmark.
-When building a public benchmark, also provide the training corpus; reference
-rules are written only to a private sidecar:
+- Certification: a regenerated 616-example PA+ corpus passed full action replay;
+  three definition-bridge certificates and an HTPS sanity target passed external replay.
+  Old PA+ bridge actions used unstable variable slots and must be regenerated with
+  `sorted-v1`; historical checkpoints are preserved, not silently repaired.
+- Historical Scale/MCTS run: 1.1M generated records, a 105M-parameter model, and 10,000
+  optimizer steps; only 80,000 records were consumed. On nine fixed goals,
+  uniform/heuristic/neural/hybrid solved 0/9, 4/9, 0/9, and 3/9; all seven successful
+  attempts passed external verification. This was not a PA+ or HTPS training run.
+- PA+ GPU and latent/HTPS work remain engineering validation. There is no demonstrated
+  solve-rate improvement from learning, no 35-target success result, and no completed
+  large-scale PA+/HTPS experiment.
 
-```bash
-python -m neural_prover build-benchmark \
-  formal/peano-number-theory.mm outputs/benchmark-v2.json \
-  --training-corpus outputs/corpus \
-  --reference-output outputs/benchmark-reference.private.json
+Next: connect PA+ generation to HTPS and checkpoint fine-tuning, build held-out target
+families, then run multi-seed controlled evaluations before scaling up. Evidence and
+acceptance criteria are in the [progress and roadmap](docs/progress-and-roadmap.md).
 
-python -m neural_prover evaluate-mcts \
-  outputs/model/final.pt outputs/corpus outputs/benchmark-v2.json \
-  formal/peano-number-theory.mm outputs/baselines.json \
-  --policies uniform,heuristic,neural,hybrid --seeds 17,19,23 \
-  --external-verifier /path/to/metamath \
-  --require-external-verification
-```
-
-The `METAMATH_EXECUTABLE` environment variable can also specify the external
-verifier. When external verification is required, a missing executable,
-timeout, or ambiguous output prevents the result from being counted as
-certified.
-
-Upgrade an existing checkpoint to support intermediate lemmas and continuous
-latent reasoning without overwriting the original files:
-
-```bash
-python -m neural_prover init-latent \
-  outputs/model/final.pt outputs/corpus/tokenizer.json \
-  outputs/model-latent/initial.pt outputs/model-latent/tokenizer.json
-
-python -m neural_prover prove-decomposed \
-  outputs/model-latent/initial.pt outputs/model-latent/tokenizer.json \
-  outputs/benchmark-v2.json CASE_ID formal/peano-number-theory.mm \
-  --simulations 100 --max-depth 20 --branching 24
-```
-
-The upgrade preserves all existing token IDs and their associated weights,
-appending only lemma-action tokens and new modules. New weights still need
-training on certified replay. This engineering prototype alone is not
-evidence of a solve-rate improvement. See
-[Intermediate lemmas and continuous latent reasoning](docs/lemma-and-latent-reasoning.md)
-for the design and acceptance criteria.
-
-The intended end-to-end proving workflow is:
+## 5. Repository and documentation
 
 ```text
-Goal and open premises
-    ↓
-Symbolic kernel enumerates legal candidate actions
-    ↓
-Neural policy ranks candidates, optionally after bounded latent reasoning
-    ↓
-Beam/MCTS exploration, execution, and backtracking
-    ↓
-All open premises discharged
-    ↓
-Compile the proof DAG and Metamath certificate
-    ↓
-Cross-check with the project verifier and an external Metamath implementation
+formal/                  Shared PA, number theory, PA+ library and definition catalog
+src/metamath_generator/  Formal kernel, conservative definitions, synthetic generation
+src/neural_prover/       Models, MCTS, Scale, shared environments and certification
+src/htps_prover/         Forward DAG data, HTPS, latent training and synchronous replay
+tests/                   Shared-kernel and both-backend regression tests
+tools/                   Verification utilities
+docs/                    Guides, designs, audits, and historical experiment reports
+outputs/                 Local data/checkpoints/reports (not tracked)
 ```
 
-Reinforcement learning will reward verified proofs, not reproduction of
-training actions. Continuous latent reasoning is used only for internal
-planning before an action. Every step that changes the formal state must
-remain a discrete, recorded, verifiable Metamath action. See the
-[current progress and research roadmap](docs/progress-and-roadmap.md)
-for detailed stages and acceptance criteria.
+The [documentation index](docs/README.md) is organized by task rather than branch.
+Most detailed design documents are currently in Chinese.
 
-## Scope of the number-theory language
+- Run experiments: [training and evaluation](docs/training-and-evaluation.md).
+- Understand the implementation: [architecture](docs/architecture.md),
+  [HTPS](docs/htps-design.md), [lemma and latent reasoning](docs/lemma-and-latent-reasoning.md).
+- Work on PA+: [definitions](docs/pa-plus-definitions.md),
+  [generation](docs/pa-plus-random-generation.md), [neural pipeline](docs/pa-plus-neural-training.md).
+- Review results and plans: [roadmap](docs/progress-and-roadmap.md),
+  [formal-system evolution](docs/formal-system-evolution.md).
 
-`formal/peano-number-theory.mm` adds explicit conservative definitions for
-primes, powers, finite sequences, rational inequalities, and finite
-certificates for logarithms/Li. Fermat's Last Theorem, Goldbach's conjecture,
-the Prime Number Theorem, and the von Koch formulation equivalent to the
-Riemann Hypothesis are named using the `statement` type. They are neither
-axioms nor proved theorems in this library. Open conjectures are never used
-as successful training labels.
+The historical `htps` branch is retained, but new development belongs on `main` or short-lived
+feature branches. Old commands remain available; see the workflow guide for migrating an
+installation named `peano-metamath-prover-htps`. Contribution rules are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Trust boundary
+## 6. License
 
-Neural scores are not proofs. A result is accepted only if:
-
-1. Every action passes type and `$d` constraint checks.
-2. The proof DAG compiles into a Metamath proof.
-3. The project verifier can replay that proof against the original formal
-   library, respecting declaration order and active scope.
-
-The project verifier currently supports only uncompressed proofs and is not
-a replacement for a mature, extensively audited general-purpose Metamath
-verifier. The CLI can invoke `metamath-exe` for independent verification.
-When publishing or citing important conclusions, use
-`--require-external-verification` to make it a mandatory certification gate.
-
-## Project history
-
-Early experiments encountered mixed syntax/theorem handling, excessive
-vacuous-quantifier and open-premise variants, cross-type substitutions, and
-approximately 1.21% exact duplicates in a Scale corpus. Those implementations
-and experimental artifacts are not included in this release directory. The
-current version retains the formal pipeline with strict typing fixes,
-quality filtering, and global deduplication.
-
-## License
-
-This project is released under [GPL-3.0](LICENSE). `formal/peano.mm` retains
-Robert Solovay's original GPL copyright notice; see its file header and
-[NOTICE](NOTICE).
+[GPL-3.0](LICENSE). `formal/peano.mm` retains Robert Solovay's original copyright notice;
+see [NOTICE](NOTICE).

@@ -212,7 +212,14 @@ def _generated_proof(
     if theorem.proof is None or store.parsed is None:
         raise ValueError(f"{theorem.name} has no generated proof")
     proof = theorem.proof
-    rule = store.parsed.statements[proof.rule]
+    rule = store.parsed.statements.get(proof.rule)
+    if rule is None:
+        try:
+            rule = store.get_by_name(proof.rule)
+        except KeyError as exc:
+            raise ValueError(
+                f"{theorem.name} uses unknown proof rule {proof.rule!r}"
+            ) from exc
     rule_mapping = {
         variable: proof.substitution.get(f"__rule_{variable}", Node(variable))
         for variable in rule.variable_types
@@ -222,6 +229,8 @@ def _generated_proof(
         (floating.expr.args[0].op, floating.expr.op)
         for floating in rule.floating
     ]
+    if not floating_order:
+        floating_order = sorted(rule.variable_types.items())
     for variable, typecode in floating_order:
         labels.extend(compiler.compile(typecode, rule_mapping[variable]))
 

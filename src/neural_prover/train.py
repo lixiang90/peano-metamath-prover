@@ -8,7 +8,7 @@ from pathlib import Path
 import torch
 from torch import Tensor
 from torch.nn import functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 from .data import ProverExample, load_examples
 from .model import ProofTransformer, ProofTransformerConfig
@@ -22,6 +22,8 @@ class TrainingConfig:
     learning_rate: float = 3e-4
     weight_decay: float = 1e-2
     value_loss_weight: float = 0.25
+    candidate_loss_weight: float = 0.25
+    pa_plus_balanced_sampling: bool = True
     gradient_clip: float = 1.0
     seed: int = 7
     device: str = "auto"
@@ -72,6 +74,7 @@ def _collate(
         ),
         "action_input": actions[:, :-1],
         "action_target": actions[:, 1:],
+        "action_full": actions,
         "value_target": torch.tensor(
             [example.value_target for example in examples],
             dtype=torch.float32,
@@ -101,6 +104,7 @@ def _epoch(
     device: torch.device,
     pad_id: int,
     value_weight: float,
+    candidate_weight: float,
     optimizer: torch.optim.Optimizer | None,
     gradient_clip: float,
 ) -> dict[str, float]:
@@ -110,6 +114,8 @@ def _epoch(
         "loss": 0.0,
         "policy_loss": 0.0,
         "value_loss": 0.0,
+        "candidate_loss": 0.0,
+        "candidate_correct": 0.0,
         "correct_tokens": 0.0,
         "tokens": 0.0,
         "examples": 0.0,
@@ -118,6 +124,7 @@ def _epoch(
         state = batch["state"].to(device)
         action_input = batch["action_input"].to(device)
         action_target = batch["action_target"].to(device)
+        action_full = batch["action_full"].to(device)
         value_target = batch["value_target"].to(device)
         with torch.set_grad_enabled(training):
             logits, value = model(state, action_input)
@@ -127,7 +134,25 @@ def _epoch(
                 ignore_index=pad_id,
             )
             value_loss = F.mse_loss(value, value_target)
-            loss = policy_loss + value_weight * value_loss
+            candidate_scores, _ = model.score_candidate_matrix(
+                state, action_full
+            )
+            duplicate_actions = action_full[:, None, :].eq(
+                action_full[None, :, :]
+            ).all(dim=-1)
+            positive_scores = candidate_scores.masked_fill(
+                ~duplicate_actions,
+                float("-inf"),
+            )
+            candidate_loss = -(
+                torch.logsumexp(positive_scores, dim=1)
+                - torch.logsumexp(candidate_scores, dim=1)
+            ).mean()
+            loss = (
+                policy_loss
+                + value_weight * value_loss
+                + candidate_weight * candidate_loss
+            )
             if training:
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -144,6 +169,16 @@ def _epoch(
             float(policy_loss.item()) * len(state)
         )
         totals["value_loss"] += float(value_loss.item()) * len(state)
+        totals["candidate_loss"] += (
+            float(candidate_loss.item()) * len(state)
+        )
+        best_candidates = candidate_scores.argmax(dim=1)
+        totals["candidate_correct"] += int(
+            duplicate_actions[
+                torch.arange(len(state), device=device),
+                best_candidates,
+            ].sum().item()
+        )
         totals["correct_tokens"] += int(
             ((predictions == action_target) & mask).sum().item()
         )
@@ -154,6 +189,8 @@ def _epoch(
         "loss": totals["loss"] / denominator,
         "policy_loss": totals["policy_loss"] / denominator,
         "value_loss": totals["value_loss"] / denominator,
+        "candidate_loss": totals["candidate_loss"] / denominator,
+        "candidate_accuracy": totals["candidate_correct"] / denominator,
         "token_accuracy": totals["correct_tokens"]
         / max(1.0, totals["tokens"]),
     }
@@ -199,6 +236,7 @@ def train_model(
         ),
     )
     model = ProofTransformer(model_cfg).to(device)
+    model.candidate_head_trained = cfg.candidate_loss_weight > 0
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=cfg.learning_rate,
@@ -206,11 +244,29 @@ def train_model(
     )
     generator = torch.Generator().manual_seed(cfg.seed)
     collate = lambda examples: _collate(examples, tokenizer.pad_id)
+    sampler = None
+    if cfg.pa_plus_balanced_sampling and tokenizer.pa_plus_context.enabled:
+        weights = {
+            "source": 0.5,
+            "definition_bridge": 0.75,
+            "bounded_instance": 3.0,
+            "search": 1.0,
+        }
+        sampler = WeightedRandomSampler(
+            [
+                weights.get(example.generation_kind, 1.0)
+                for example in train_examples
+            ],
+            num_samples=len(train_examples),
+            replacement=True,
+            generator=generator,
+        )
     train_loader = DataLoader(
         ProofDataset(train_examples),
         batch_size=cfg.batch_size,
-        shuffle=True,
-        generator=generator,
+        shuffle=sampler is None,
+        sampler=sampler,
+        generator=generator if sampler is None else None,
         num_workers=cfg.num_workers,
         collate_fn=collate,
     )
@@ -231,6 +287,7 @@ def train_model(
             device,
             tokenizer.pad_id,
             cfg.value_loss_weight,
+            cfg.candidate_loss_weight,
             optimizer,
             cfg.gradient_clip,
         )
@@ -240,6 +297,7 @@ def train_model(
             device,
             tokenizer.pad_id,
             cfg.value_loss_weight,
+            cfg.candidate_loss_weight,
             None,
             cfg.gradient_clip,
         )

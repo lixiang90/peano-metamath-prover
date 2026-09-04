@@ -115,10 +115,14 @@ class TransformerPolicy:
         tokenizer: MetamathTokenizer,
         environment: BackwardEnvironment,
         device: str | torch.device,
+        *,
+        configure_environment: bool = True,
     ) -> None:
         self.model = model.to(device).eval()
         self.tokenizer = tokenizer
         self.environment = environment
+        if configure_environment:
+            self.environment.configure_from_tokenizer(tokenizer)
         self.device = torch.device(device)
         self.candidates_scored = 0
         self.action_tokens_scored = 0
@@ -201,6 +205,7 @@ class TransformerPolicy:
                     tactic.substitution_dict(),
                     canonical,
                     variable_order=order,
+                    rule_variable_types=assertion.variable_types,
                 )
             ids = self.tokenizer.encode(tokens)
             if len(ids) > self.model.config.max_action_tokens:

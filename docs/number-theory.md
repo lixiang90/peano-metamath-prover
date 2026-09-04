@@ -4,6 +4,11 @@
 [peano.mm](../formal/peano.mm) 的保守词汇扩展。它只增加语法和显式定义，不把费马
 大定理、哥德巴赫猜想、素数定理或黎曼猜想直接假设为真。
 
+在它之上的第一批通用 PA+ 定义位于
+[peano-pa-plus.mm](../formal/peano-pa-plus.mm)，其可编辑目录、机械保守性审计、
+68 个高层定义和 35 个闭合目标公式见
+[PA+ 分层定义库与生成接口](pa-plus-definitions.md)。
+
 ## 三类声明
 
 扩展文件严格区分：
@@ -100,14 +105,19 @@ A^N + B^N ≠ C^N
 ## 使用
 
 ```powershell
+$env:PYTHONPATH='src'
 python -m metamath_generator formal/peano-number-theory.mm --mode random --steps 1000
 ```
 
 检查扩展：
 
 ```powershell
+$env:PYTHONPATH='src'
 python -m unittest discover -s tests -v
 ```
+
+以上从仓库根目录运行；完整神经/HTPS 回归还需 PyTorch，安装方式见
+[README](../README.md)。
 
 这里完成的是“可表达性和保守定义层”，不是四个著名结果的形式证明。
 `log`、`Li` 的证书关系与通常分析定义等价，仍需要在更丰富的形式化分析

@@ -125,7 +125,7 @@ def _compile_tree(
         )
     assertion = database.logical_assertions.get(
         transition.tactic.rule
-    )
+    ) or transition.assertion
     if assertion is None:
         raise CertificateError(
             f"certificate cannot use non-source assertion "
@@ -147,6 +147,36 @@ def _compile_tree(
                 f"{assertion.name}"
             )
         labels.extend(compiler.compile(typecode, value))
+
+    if assertion.name not in database.logical_assertions:
+        if assertion.hypotheses:
+            raise CertificateError(
+                "derived assertion macros must be premise-free"
+            )
+        if assertion.proof is None or not assertion.proof.source_labels:
+            raise CertificateError(
+                f"derived assertion {assertion.name} has no inline proof"
+            )
+        floating_replacements: dict[str, list[str]] = {}
+        for floating_hypothesis in assertion.floating:
+            variable = floating_hypothesis.expr.args[0].op
+            value = substitution.get(variable)
+            if value is None:
+                raise CertificateError(
+                    f"missing substitution for {variable} in "
+                    f"{assertion.name}"
+                )
+            floating_replacements[floating_hypothesis.label] = (
+                compiler.compile(floating_hypothesis.expr.op, value)
+            )
+        expanded: list[str] = []
+        for label in assertion.proof.source_labels:
+            replacement = floating_replacements.get(label)
+            if replacement is None:
+                expanded.append(label)
+            else:
+                expanded.extend(replacement)
+        return expanded
 
     children = iter(node.children)
     for hypothesis in assertion.hypotheses:

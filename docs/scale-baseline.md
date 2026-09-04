@@ -5,6 +5,10 @@
 [首次百万级训练与深度实验](first-large-scale-run.md)，后续闭环解题指标见
 [当前进展与研究路线](progress-and-roadmap.md)。
 
+2026-09-04 核对时保留以下历史数字；之后还有
+[RTX 5090 的10,000步实验](first-rtx5090-closed-loop-run.md)和
+[PA+ 小型 GPU 验证](pa-plus-neural-training.md)，它们不是本页同一实验的续写。
+
 ## 数据
 
 - 总量：1,000,000

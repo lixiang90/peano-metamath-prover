@@ -217,7 +217,18 @@ class MetamathParser:
                     tuple(body[1:]),
                     {var: floating_map[var] for var in body[1:] if var in floating_map},
                 )
-                self.database.add_syntax_rule(syntax)
+                # ``statement`` is a project-specific wrapper around one wff,
+                # not an open-ended grammar category.  A target declaration
+                # must therefore parse through the already-declared wrapper;
+                # registering the target itself first would let malformed
+                # payloads such as ``statement 0`` validate by self-reference.
+                is_statement_wrapper = (
+                    output_type == "statement"
+                    and len(syntax.pattern) == 1
+                    and syntax.variable_types.get(syntax.pattern[0]) == "wff"
+                )
+                if output_type != "statement" or is_statement_wrapper:
+                    self.database.add_syntax_rule(syntax)
 
             conclusion = self.parse_expression(body)
             declaration_index = self._declare(label)
