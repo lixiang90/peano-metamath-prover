@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import itertools
 from dataclasses import asdict, dataclass
 from typing import Iterable
@@ -133,6 +135,8 @@ class BackwardEnvironment:
     ) -> None:
         self.database = database
         excluded = set(excluded_assertions)
+        self.excluded_assertions = frozenset(excluded)
+        self._pa_plus_bridges: set[str] = set()
         self.assertions = {
             label: theorem
             for label, theorem in database.logical_assertions.items()
@@ -176,15 +180,18 @@ class BackwardEnvironment:
     def configure_from_tokenizer(
         self,
         tokenizer: MetamathTokenizer,
+        *,
+        target_guidance: bool = True,
     ) -> None:
         """Enable PA+ bounded terms and target ordering from tokenizer metadata."""
 
         context = tokenizer.pa_plus_context
-        if not context.enabled:
-            return
+        for name in self._pa_plus_bridges:
+            self.assertions.pop(name, None)
+        self._pa_plus_bridges.clear()
         self._install_pa_plus_bridges(context.definition_predicates)
         targets: list[Node] = []
-        for _, body in context.target_statements:
+        for _, body in context.target_statements if target_guidance else ():
             try:
                 parsed = self._parser.parse_expression([
                     "wff", *body.split()
@@ -201,7 +208,37 @@ class BackwardEnvironment:
         self._local_candidate_cache.clear()
         self._candidate_cache.clear()
         self._tactic_cache.clear()
+        self._transition_cache.clear()
+        self._direct_closure_cache.clear()
         self._one_step_closure_cache.clear()
+
+    def configuration_record(self) -> dict:
+        """Stable semantic fingerprint for same-environment policy comparisons."""
+        rules = tuple(
+            (
+                name, rule.conclusion.to_prefix(),
+                tuple(h.expr.to_prefix() for h in rule.hypotheses),
+                tuple(sorted(rule.variable_types.items())),
+                tuple(sorted(rule.d_constraints)),
+                tuple((h.label, h.expr.to_prefix()) for h in rule.floating),
+                rule.proof.source_labels if rule.proof else (),
+            )
+            for name, rule in self.assertions.items()
+        )
+        targets = tuple(t.to_prefix() for t in self._target_formulas)
+        fingerprint = hashlib.sha256(repr((
+            rules, self._bounded_nat_max, targets,
+            tuple(sorted(self.excluded_assertions)),
+        )).encode("utf-8")).hexdigest()
+        return {
+            "fingerprint": fingerprint,
+            "assertions": len(self.assertions),
+            "definition_bridges": len(self._pa_plus_bridges),
+            "bounded_nat_max": self._bounded_nat_max,
+            "inference_target_guidance": bool(targets),
+            "target_formulas": len(targets),
+            "excluded_assertions": sorted(self.excluded_assertions),
+        }
 
     def _install_pa_plus_bridges(
         self,
@@ -226,12 +263,22 @@ class BackwardEnvironment:
             ),
         )
         generator.generate("random", 0)
+        from metamath_generator.verifier import verify
+
+        verification_database = copy.copy(self.database)
+        verification_database.variables = set(self.database.variables)
+        verification_database.floating_hypotheses = dict(
+            self.database.floating_hypotheses
+        )
         for bridge in generator.store.generated():
-            if bridge.name in self.assertions:
+            if (
+                bridge.name in self.assertions
+                or bridge.name in self.excluded_assertions
+            ):
                 continue
             all_types = {
-                **bridge.proof_variable_types,
                 **bridge.variable_types,
+                **bridge.proof_variable_types,
             }
             floating = tuple(
                 Hypothesis(
@@ -250,6 +297,8 @@ class BackwardEnvironment:
             labels = tuple(
                 _generated_proof(bridge, generator.store, compiler)
             )
+            if self.excluded_assertions.intersection(labels):
+                continue
             derived = Theorem(
                 name=bridge.name,
                 hypotheses=list(bridge.hypotheses),
@@ -264,7 +313,13 @@ class BackwardEnvironment:
                 ),
                 kind="derived",
             )
+            verification_database.variables.update(all_types)
+            verification_database.floating_hypotheses.update(
+                (h.label, h) for h in floating
+            )
+            verify(derived, verification_database)
             self.assertions[derived.name] = derived
+            self._pa_plus_bridges.add(derived.name)
 
     @staticmethod
     def _numeral(value: int) -> Node:
@@ -990,6 +1045,8 @@ def parse_tactic_tokens(
     state_theorem: Theorem,
     tokenizer: MetamathTokenizer,
     database: Database,
+    *,
+    environment: BackwardEnvironment | None = None,
 ) -> Tactic:
     sequence = list(tokens)
     if "<EOS>" in sequence:
@@ -1033,9 +1090,22 @@ def parse_tactic_tokens(
     if subst_index != rule_index + 2:
         raise InvalidTactic("malformed rule header")
     rule_name = sequence[rule_index + 1]
+    if (
+        rule_name.startswith("gen_df_")
+        and tokenizer.pa_plus_context.bridge_variable_order != "sorted-v1"
+    ):
+        raise InvalidTactic(
+            "legacy PA+ bridge binding order is not reproducible; regenerate corpus"
+        )
     if rule_name == "<ASSUMPTION>":
         return Tactic.create(rule_name)
-    rule = database.logical_assertions.get(rule_name)
+    if environment is not None and environment.database is not database:
+        raise InvalidTactic("action environment belongs to a different database")
+    rules = (
+        environment.assertions
+        if environment is not None else database.logical_assertions
+    )
+    rule = rules.get(rule_name)
     if rule is None:
         raise InvalidTactic(f"unknown rule {rule_name!r}")
     canonical = tokenizer.canonical_variables(state_theorem)
@@ -1062,7 +1132,7 @@ def parse_tactic_tokens(
                 order = [
                     floating.expr.args[0].op
                     for floating in rule.floating
-                ] or list(rule.variable_types)
+                ] or sorted(rule.variable_types)
                 for candidate in order:
                     candidate_type = rule.variable_types[candidate]
                     index = counters.get(candidate_type, 0)

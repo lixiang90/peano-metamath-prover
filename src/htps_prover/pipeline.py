@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from metamath_generator.parser import parse
-from neural_prover.certificate import compile_certificate, verify_certificate
+from neural_prover.certificate import compile_certificate
 from neural_prover.environment import ProofState
 from neural_prover.latent_model import LatentProofTransformer
 from neural_prover.lemma import (
@@ -17,6 +17,7 @@ from neural_prover.lemma import (
 from neural_prover.rl import ReplayBuffer
 from neural_prover.search import HybridPolicy, TransformerPolicy
 from neural_prover.tokenizer import MetamathTokenizer
+from neural_prover.verification import verification_record
 
 from .hypergraph import (
     HTPSConfig,
@@ -130,6 +131,11 @@ def evaluate_htps(
     limit: int = 32,
     device_name: str = "auto",
     search_config: HTPSConfig | None = None,
+    external_verifier: str | None = None,
+    require_external_verification: bool = False,
+    external_timeout_seconds: float = 60.0,
+    model_target_hints: bool = True,
+    inference_target_guidance: bool = True,
 ) -> dict:
     """Evaluate only by independently verified final certificates."""
 
@@ -139,15 +145,25 @@ def evaluate_htps(
     model, _ = LatentProofTransformer.load_checkpoint(
         checkpoint, map_location=device
     )
-    environment = LemmaBackwardEnvironment(database)
-    generator = LemmaActionGenerator(environment, LemmaGeneratorConfig())
-    neural = TransformerPolicy(model, tokenizer, environment, device)
-    policy = HybridPolicy(environment, neural)
+    if model.config.vocab_size != len(tokenizer):
+        raise ValueError("checkpoint and tokenizer vocabulary sizes differ")
     records = _load_records(policy_corpus_path)[:limit]
     episodes: list[dict] = []
     certified = 0
     base_search = search_config or HTPSConfig()
     for episode_index, record in enumerate(records):
+        environment = LemmaBackwardEnvironment(
+            database, excluded_assertions=record.get("excluded_labels", ())
+        )
+        environment.configure_from_tokenizer(
+            tokenizer, target_guidance=inference_target_guidance
+        )
+        generator = LemmaActionGenerator(environment, LemmaGeneratorConfig())
+        neural = TransformerPolicy(
+            model, tokenizer.with_target_hints(model_target_hints), environment,
+            device, configure_environment=False,
+        )
+        policy = HybridPolicy(environment, neural)
         theorem = tokenizer.theorem_from_state_tokens(
             record["state_tokens"],
             database,
@@ -170,6 +186,11 @@ def evaluate_htps(
         valid = False
         error: str | None = None
         certificate_steps = 0
+        verification = {
+            "internal_verified": False,
+            "external_verification": {"status": "not_run"},
+            "certification_level": "none",
+        }
         if result.search.solved:
             try:
                 certificate = compile_certificate(
@@ -178,16 +199,24 @@ def evaluate_htps(
                     database,
                     name=f"eval_cert_{record['theorem_name']}",
                 )
-                verify_certificate(certificate, database)
-                valid = True
+                valid, verification = verification_record(
+                    certificate, database, database_path,
+                    external_verifier=external_verifier,
+                    require_external=require_external_verification,
+                    timeout_seconds=external_timeout_seconds,
+                )
                 certificate_steps = len(certificate.proof.source_labels)
-                certified += 1
+                certified += int(valid)
+                if not valid:
+                    error = "required external verification did not pass"
             except Exception as exc:
                 error = str(exc)
         episodes.append({
             "theorem_name": record["theorem_name"],
             "proof_depth": record.get("proof_depth"),
             "certified": valid,
+            "verification": verification,
+            "environment": environment.configuration_record(),
             "certificate_error": error,
             "abstract_actions": len(result.search.actions),
             "certificate_steps": certificate_steps,
@@ -216,6 +245,16 @@ def evaluate_htps(
         "certified_rate": certified / len(records) if records else 0.0,
         "pass_at_1": certified / len(records) if records else 0.0,
         "certificate_only_scoring": True,
+        "soundness_gate": {
+            "internal_required": True,
+            "external_required": require_external_verification,
+            "external_verifier": external_verifier,
+            "external_timeout_seconds": external_timeout_seconds,
+        },
+        "guidance": {
+            "model_target_hints": model_target_hints,
+            "inference_target_guidance": inference_target_guidance,
+        },
         "total_wall_seconds": sum(
             item["wall_seconds"] for item in episodes
         ),

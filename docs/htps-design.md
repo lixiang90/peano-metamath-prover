@@ -8,7 +8,8 @@
 本版本借鉴 HyperTree Proof Search，但不复制 Evariste 的专用 Equations 环境。
 所有状态、动作、替换、类型和 `$d` 条件仍由项目的 Metamath 内核解释。搜索成功
 只是候选结果；当前 HTPS 命令只有在动作序列编译成证明并被项目内验证器完整重放后，
-才计为解决。这里的验证独立于模型和搜索，但不等于官方 Metamath 的外部交叉验证。
+才计为解决。现可用 `--require-external-verification` 再要求官方 Metamath 的外部
+交叉验证；评估、回放收集和同步闭环共用该门槛，失败的成功路径不进入 replay。
 
 连续隐式思维只改变 policy、critic、lemma gate 和 halt 的数值；它不能创建
 事实、修改形式状态或绕过证书验证。
@@ -112,8 +113,10 @@ actor 扩展为异步多进程或多 GPU，而不改变证书边界。
 solved、或抽象动作到达空状态，任何一项单独都不足以进入最终统计。
 
 上述项目是正式评估要求，不代表当前 JSON 已全部报告：当前只有 pass@1、动作与
-证书步数、搜索图指标、耗时和候选评分数等。外部验证门槛、完整 ID/OOD 分组和
-pass@k 调度尚待补齐；`peano-htps evaluate` 没有 `--require-external-verification`。
+证书步数、搜索图指标、耗时和候选评分数等。完整 ID/OOD 分组和 pass@k 调度尚待
+补齐。`evaluate`、`collect`、`closed-loop` 已支持 `--external-verifier`、
+`--require-external-verification`、`--external-timeout-seconds`，并记录验证状态与
+环境指纹。目标提示/推理引导开关见[PA+ 认证与公平评估](pa-plus-certification.md)。
 
 使用 `--randomize-search` 时，每题会从 CLI 给出的上界内确定性采样 simulation、
 expansion、branching、PUCT、temperature 和 depth decay。实际取值逐题写入结果，

@@ -3,7 +3,7 @@
 本文说明扩展 PA+ 形式库和定理生成器如何进入神经策略的词表、训练样本与证明
 搜索。所有神经动作仍须由符号内核枚举和验证；模型不会获得新增公理。
 
-本页于 2026-09-04 按 `b911e9c` 核对；实验数字仍对应 2026-08-31，不表示重新训练。
+本页于 2026-09-04 更新认证接口；第4节实验数字仍对应 2026-08-31，不表示重新训练。
 
 ## 1. 结构化词表
 
@@ -94,6 +94,11 @@ seed 7。checkpoint 使用同批语料的 `outputs/pa-plus-corpus/tokenizer.json
 
 ## 4. 2026-08-31 本地 GPU 工程验证
 
+历史记录：后续跨进程审计发现，当时有界实例动作的变量槽位顺序不稳定。下列训练
+指标保留原始含义，不应作为已经通过新全量审计的训练基线；再次训练须使用新生成
+的 `sorted-v1` 语料。原生成 DAG 的证明与动作序列化是不同层次，详见
+[认证补齐记录](pa-plus-certification.md)。
+
 RTX 3060 Laptop GPU 上完成了一次小型但非纯 CPU 的闭环验证：
 
 - 语料共616例：127条源证明、136条定义桥、136条有界闭式实例、217条引导搜索；
@@ -115,19 +120,20 @@ RTX 3060 Laptop GPU 上完成了一次小型但非纯 CPU 的闭环验证：
 `outputs/pa-plus-neural-gpu-smoke-v2/`（`corpus/manifest.json`、`model/metrics.json`、
 `model/best.pt`、`model/final.pt`）；checkpoint 必须与 `corpus/tokenizer.json` 配套。
 
-## 5. 尚未接通的接口与评估前置条件
+## 5. 认证补齐与剩余边界
 
-- `audit-corpus` / `audit-scale-corpus` 仍只在源数据库查找动作规则，未安装并解析
-  `gen_df_*`。对含生成式桥动作的 PA+ 语料，不能宣称这些 CLI 已完成全量认证；
-  当前已有定义桥/有界实例的 DAG 重放测试和单例神经证书验证。
-- `build-scale-corpus` 同样使用源规则模板解析，尚不能直接接续这种 PA+ 语料。
-  `peano-htps generate` 也没有目录、有界实例和目标引导配置参数。
-- 当前四策略评估中，只有构造 `TransformerPolicy` 的 neural/hybrid 分支会自动
-  配置 PA+ 环境，uniform/heuristic 不会。正式 PA+ 对照之前，必须统一定义桥、
-  闭项和候选顺序，再比较学习增益；旧数论库的历史对照不受此新增上下文影响。
-- `--max-target-hints 0` 只去掉状态中的目标标签；环境排序仍使用元数据中的目标
-  公式，不能当作“完全关闭目标引导”的消融。须分别控制生成权重、状态提示与
-  推理枚举，并保留未参与引导的目标族作为 OOD 评估。
+- `audit-corpus` / `audit-scale-corpus` 已安装并解析经认证的 `gen_df_*`，且报告
+  环境指纹；生成与推理共用确定的排序槽位。旧 `legacy-unordered` 桥动作会被
+  明确拒绝，不能猜测替换后当成回放通过。
+- 四策略 `evaluate-mcts` 与 `evaluate` 在选择策略前统一配置环境，记录每次
+  attempt 的定义桥数、有界项上界、目标排序设置和指纹。
+- `--no-model-target-hints` 只关闭模型状态中的标签；
+  `--no-inference-target-guidance` 关闭目标驱动的断言排序，保留定义桥与闭项。
+  生成阶段用 `--target-guidance-weight 0`，保存的状态提示用 `--max-target-hints 0`。
+  各层开关不能互相替代，且仍须保留未参与引导的目标族作为 OOD 评估。
+- HTPS 的评估/回放收集/同步闭环已接入可选强制外部验证，未通过时不接受成功路径。
+- `build-scale-corpus` 的源模板解析仍待接入 PA+，`peano-htps generate` 仍没有目录、
+  有界实例和目标引导参数；基础 checkpoint 微调入口也仍待补齐。审计分片能力不
+  等于已经完成 Scale 生成集成。
 
-这些是当前代码限制，本次文档核对未修改实现。正式规模训练前应优先完成上述
-统一回放、词表/环境一致性及无泄漏同预算评估。
+命令、实测结果和剩余研究验收见[PA+ 认证与公平评估](pa-plus-certification.md)。

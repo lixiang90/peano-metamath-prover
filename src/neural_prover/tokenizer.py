@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Iterable, Iterator
 
@@ -75,6 +75,7 @@ class PAPlusTokenizerContext:
     variable_symbols: tuple[str, ...] = ()
     bounded_nat_max: int = -1
     max_target_hints: int = 3
+    bridge_variable_order: str = "sorted-v1"
 
     @property
     def enabled(self) -> bool:
@@ -426,7 +427,7 @@ class MetamathTokenizer:
             floating.expr.args[0].op for floating in rule.floating
         ]
         if not floating_order:
-            floating_order = list(rule.variable_types)
+            floating_order = sorted(rule.variable_types)
         for variable in floating_order:
             key = f"__rule_{variable}"
             value = theorem.proof.substitution.get(key)
@@ -566,6 +567,20 @@ class MetamathTokenizer:
             pa_plus_context=context,
         )
 
+    def with_target_hints(self, enabled: bool) -> "MetamathTokenizer":
+        """A model-input ablation; preserve IDs and inference target metadata."""
+        return MetamathTokenizer(
+            self.tokens,
+            self.config,
+            preserve_token_order=True,
+            pa_plus_context=replace(
+                self.pa_plus_context,
+                max_target_hints=(
+                    self.pa_plus_context.max_target_hints if enabled else 0
+                ),
+            ),
+        )
+
     def theorem_from_state_tokens(
         self,
         tokens: Iterable[str],
@@ -665,6 +680,8 @@ class MetamathTokenizer:
         }:
             raise ValueError("unsupported tokenizer format")
         context_payload = payload.get("pa_plus_context") or {}
+        if context_payload:
+            context_payload.setdefault("bridge_variable_order", "legacy-unordered")
         context_payload["definition_predicates"] = tuple(
             context_payload.get("definition_predicates", ())
         )

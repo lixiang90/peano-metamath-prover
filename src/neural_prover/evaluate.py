@@ -13,10 +13,10 @@ from torch.nn import functional as F
 from metamath_generator.parser import parse
 
 from .benchmark import BenchmarkCase, load_benchmarks
-from .certificate import CertificateError, compile_certificate, verify_certificate
+from .certificate import CertificateError, compile_certificate
 from .data import load_examples
 from .environment import BackwardEnvironment, ProofState
-from .external import verify_certificate_external
+from .verification import verification_record
 from .hybrid import HybridActionGenerator
 from .mcts import MCTSConfig, ProofMCTS
 from .model import ProofTransformer
@@ -33,6 +33,8 @@ from .tokenizer import MetamathTokenizer
 
 @dataclass(frozen=True, slots=True)
 class EvaluationConfig:
+    model_target_hints: bool = True
+    inference_target_guidance: bool = True
     device: str = "auto"
     easy_simulations: int = 100
     medium_simulations: int = 300
@@ -50,6 +52,8 @@ class EvaluationConfig:
 
 @dataclass(frozen=True, slots=True)
 class MCTSEvaluationConfig:
+    model_target_hints: bool = True
+    inference_target_guidance: bool = True
     device: str = "auto"
     simulations: int = 60
     max_search_depth: int = 16
@@ -81,6 +85,8 @@ def evaluate_supervised(
     tokenizer: MetamathTokenizer,
     test_path: str | Path,
     device: torch.device,
+    *,
+    model_target_hints: bool = True,
 ) -> dict:
     examples = load_examples(test_path)
     if not examples:
@@ -99,8 +105,16 @@ def evaluate_supervised(
     value_error = 0.0
     model.eval()
     for example in examples:
+        state_ids = example.state_ids
+        if not model_target_hints:
+            tokens = list(example.state_tokens)
+            if "<TARGET_HINTS>" in tokens:
+                start = tokens.index("<TARGET_HINTS>") + 1
+                end = tokens.index("<END_TARGET_HINTS>", start)
+                del tokens[start:end]
+                state_ids = tokenizer.encode(tokens)
         state = torch.tensor(
-            [example.state_ids],
+            [state_ids],
             dtype=torch.long,
             device=device,
         )
@@ -132,6 +146,7 @@ def evaluate_supervised(
         "token_accuracy": correct_tokens / max(1, total_tokens),
         "exact_action_accuracy": exact / len(examples),
         "value_mse": value_error / len(examples),
+        "model_target_hints": model_target_hints,
     }
 
 
@@ -170,21 +185,12 @@ def _verification_record(
     require_external: bool,
     timeout_seconds: float,
 ) -> tuple[bool, dict]:
-    verify_certificate(certificate, database)
-    external = verify_certificate_external(
-        certificate,
-        database_path,
-        executable=external_verifier,
+    return verification_record(
+        certificate, database, database_path,
+        external_verifier=external_verifier,
+        require_external=require_external,
         timeout_seconds=timeout_seconds,
     )
-    certified = external.passed if require_external else True
-    return certified, {
-        "internal_verified": True,
-        "external_verification": external.to_record(),
-        "certification_level": (
-            "internal+external" if external.passed else "internal_only"
-        ),
-    }
 
 
 def _run_policy(
@@ -194,12 +200,17 @@ def _run_policy(
     database,
     database_path: str | Path,
     config: EvaluationConfig,
+    tokenizer: MetamathTokenizer | None = None,
 ) -> dict:
     records: list[dict] = []
     for case in cases:
         environment = BackwardEnvironment(
             database, excluded_assertions=case.excluded_labels
         )
+        if tokenizer is not None:
+            environment.configure_from_tokenizer(
+                tokenizer, target_guidance=config.inference_target_guidance
+            )
         policy = policy_factory(environment)
         target = case.theorem(database)
         search = NeuralBestFirstSearch(
@@ -262,6 +273,7 @@ def _run_policy(
             ),
             "elapsed_seconds": elapsed,
             "verification": verification,
+            "environment": environment.configuration_record(),
             "compute": {
                 "environment": environment.metrics.to_record(),
                 "policy": (
@@ -333,6 +345,7 @@ def evaluate_checkpoint(
         tokenizer,
         Path(corpus_directory) / "test.jsonl",
         device,
+        model_target_hints=cfg.model_target_hints,
     )
     database = parse(database_path)
     cases = load_benchmarks(benchmark_path)
@@ -345,6 +358,7 @@ def evaluate_checkpoint(
             database,
             database_path,
             cfg,
+            tokenizer,
         ))
     if cfg.evaluate_heuristic:
         policies.append(_run_policy(
@@ -354,17 +368,20 @@ def evaluate_checkpoint(
             database,
             database_path,
             cfg,
+            tokenizer,
         ))
     if cfg.evaluate_neural:
         policies.append(_run_policy(
             "transformer",
             lambda environment: TransformerPolicy(
-                model, tokenizer, environment, device
+                model, tokenizer.with_target_hints(cfg.model_target_hints),
+                environment, device, configure_environment=False,
             ),
             cases,
             database,
             database_path,
             cfg,
+            tokenizer,
         ))
     report = {
         "format": "peano-proof-evaluation-v1",
@@ -412,6 +429,8 @@ def evaluate_mcts_checkpoint(
         checkpoint,
         map_location=device,
     )
+    if model.config.vocab_size != len(tokenizer):
+        raise ValueError("checkpoint and tokenizer vocabulary sizes differ")
     model.to(device).eval()
     database = parse(database_path)
     all_cases = load_benchmarks(benchmark_path)
@@ -470,6 +489,9 @@ def evaluate_mcts_checkpoint(
                 environment = BackwardEnvironment(
                     database, excluded_assertions=case.excluded_labels
                 )
+                environment.configure_from_tokenizer(
+                    tokenizer, target_guidance=cfg.inference_target_guidance
+                )
                 neural = None
                 if policy_mode == "uniform":
                     policy = UniformPolicy()
@@ -477,7 +499,8 @@ def evaluate_mcts_checkpoint(
                     policy = HeuristicPolicy(environment)
                 elif policy_mode in {"neural", "hybrid"}:
                     neural = TransformerPolicy(
-                        model, tokenizer, environment, device
+                        model, tokenizer.with_target_hints(cfg.model_target_hints),
+                        environment, device, configure_environment=False,
                     )
                     policy = (
                         neural if policy_mode == "neural"
@@ -546,6 +569,7 @@ def evaluate_mcts_checkpoint(
                     "outcome": result.outcome if result else "error",
                     "elapsed_seconds": time.perf_counter() - started,
                     "verification": verification,
+                    "environment": environment.configuration_record(),
                     "compute": {
                         "environment": environment.metrics.to_record(),
                         "policy": neural.metrics() if neural else {},

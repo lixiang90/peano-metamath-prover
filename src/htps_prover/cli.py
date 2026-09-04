@@ -140,6 +140,12 @@ def build_parser() -> argparse.ArgumentParser:
     loop.add_argument("--epochs", type=int, default=2)
     loop.add_argument("--device", default="auto")
     _add_search(loop)
+    for command in (collect, evaluate, loop):
+        command.add_argument("--external-verifier")
+        command.add_argument("--require-external-verification", action="store_true")
+        command.add_argument("--external-timeout-seconds", type=float, default=60.0)
+        command.add_argument("--no-model-target-hints", action="store_true")
+        command.add_argument("--no-inference-target-guidance", action="store_true")
     return parser
 
 
@@ -203,6 +209,11 @@ def main(argv: list[str] | None = None) -> None:
             args.database,
             args.output,
             ReplayCollectionConfig(
+                external_verifier=args.external_verifier,
+                require_external_verification=args.require_external_verification,
+                external_timeout_seconds=args.external_timeout_seconds,
+                model_target_hints=not args.no_model_target_hints,
+                inference_target_guidance=not args.no_inference_target_guidance,
                 examples=args.examples,
                 seed=args.seed,
                 device=args.device,
@@ -227,6 +238,11 @@ def main(argv: list[str] | None = None) -> None:
             limit=args.limit,
             device_name=args.device,
             search_config=_search_config(args),
+            external_verifier=args.external_verifier,
+            require_external_verification=args.require_external_verification,
+            external_timeout_seconds=args.external_timeout_seconds,
+            model_target_hints=not args.no_model_target_hints,
+            inference_target_guidance=not args.no_inference_target_guidance,
         ))
     elif args.command == "closed-loop":
         _print(run_closed_loop(
@@ -238,6 +254,11 @@ def main(argv: list[str] | None = None) -> None:
             ClosedLoopConfig(
                 iterations=args.iterations,
                 collection=ReplayCollectionConfig(
+                    external_verifier=args.external_verifier,
+                    require_external_verification=args.require_external_verification,
+                    external_timeout_seconds=args.external_timeout_seconds,
+                    model_target_hints=not args.no_model_target_hints,
+                    inference_target_guidance=not args.no_inference_target_guidance,
                     examples=args.examples,
                     seed=args.seed,
                     device=args.device,

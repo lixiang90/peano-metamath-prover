@@ -14,7 +14,7 @@
 `neural_prover` 提供基础模型与 PA+ 训练/推理，`htps_prover` 提供超图搜索和 latent
 闭环。无需相邻的 `peano-metamath-prover-htps` 文件夹。
 
-文档于 2026-09-04 按代码版本 `b911e9c` 核对。以下命令在本仓库根目录执行；
+文档于 2026-09-04 更新，含 PA+ 认证与公平评估补齐。以下命令在本仓库根目录执行；
 `bash` 代码块的多行续行使用 `\`，PowerShell 应改为反引号或合并为一行。
 
 ## HTPS 快速开始
@@ -52,7 +52,8 @@ peano-htps evaluate outputs/closed-loop/checkpoint-002.pt \
 若从旧 checkpoint 启动，第1步须追加 `--base-tokenizer BASE_TOKENIZER.json`，
 第2步改用 `peano-htps init-latent BASE.pt BASE_TOKENIZER.json outputs/latent-initial.pt outputs/htps-data/tokenizer.json`。
 不得把从头生成的 tokenizer 与旧 checkpoint 任意混配。HTPS 当前认证口径为项目内
-证书重放，尚未接入官方 Metamath 的强制验证 CLI 选项。
+证书重放；现可追加 `--external-verifier /path/to/metamath --require-external-verification`
+要求官方 Metamath 验证。该门槛同时支持 `evaluate`、`collect` 和 `closed-loop`。
 
 PA+ 的目录、有界实例和35目标生成参数已接入 `neural_prover build-corpus`；
 尚未接入 `peano-htps generate` 或完整 Scale 路径。PA+ 实验请使用下方专门示例。
@@ -102,6 +103,12 @@ docs/                    架构、数论定义与 Scale 实验说明
 定义桥实例经混合搜索闭合，证书通过项目内和官方 Metamath 双验证。这是接线验证，
 不是35目标解题率实验，也不是百万级 PA+ 训练。详见
 [PA+ 神经训练与闭环推理](docs/pa-plus-neural-training.md)。
+
+2026-09-04 已补齐 PA+ 动作审计、统一四策略环境和 HTPS 外部验证门槛。跨进程审计
+发现旧桥动作的变量槽位依赖集合遍历顺序；新语料使用确定的 `sorted-v1` 编码，
+重新生成的616例全部回放通过。旧 PA+ 桥动作语料须重建，不能把新增审计视作旧
+语料已被追认。详情与无引导消融命令见
+[PA+ 认证与公平评估](docs/pa-plus-certification.md)。
 
 以下保留 2026-08-24 的历史规模结果，来自数论库而非新增 PA+ 语料：
 
@@ -243,6 +250,7 @@ python -m neural_prover train-scale \
 - [PA+ 分层定义库](docs/pa-plus-definitions.md)
 - [PA+ 随机定理生成](docs/pa-plus-random-generation.md)
 - [PA+ 神经训练与闭环推理](docs/pa-plus-neural-training.md)
+- [PA+ 认证与公平评估](docs/pa-plus-certification.md)
 - [形式系统演进设计（含未实现部分）](docs/formal-system-evolution.md)
 - [首次百万级训练与深度实验](docs/first-large-scale-run.md)
 - [首次 RTX 5090 规模训练与闭环实验](docs/first-rtx5090-closed-loop-run.md)
@@ -339,7 +347,7 @@ python -m neural_prover prove-decomposed \
 当前项目内验证器只支持未压缩证明，尚不能替代经过长期审计的通用 Metamath
 验证器。`neural_prover evaluate` / `evaluate-mcts` 可调用外部 Metamath；发布或
 引用这些评估结果时应使用 `--require-external-verification` 将其设为强制认证门槛。
-该选项不是所有子命令共有的能力，HTPS 的外部强制验证仍待接入。
+HTPS 的 `evaluate`、`collect`、`closed-loop` 也支持该门槛；其他子命令须以帮助为准。
 
 ## 项目沿革
 

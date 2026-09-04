@@ -69,7 +69,8 @@ MCTS 统计和启发式都不属于符号验证边界。当前内核仅支持未
 
 PA+ 定义桥以 `gen_df_*` 宏参与搜索，证书编译时内联回原始形式库标签，不加入
 可信公理。当前 `neural_prover evaluate` / `evaluate-mcts` 支持外部强制验证；
-HTPS `evaluate` 仅自动执行项目内验证，不能把两者的 certified 口径混用。
+HTPS `evaluate` / `collect` / `closed-loop` 也支持同一门槛。必须区分
+`internal_only` 和 `internal+external`，不能把两种 certified 口径混用。
 
 ## 6. Scale 管线
 

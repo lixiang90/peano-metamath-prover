@@ -115,11 +115,14 @@ class TransformerPolicy:
         tokenizer: MetamathTokenizer,
         environment: BackwardEnvironment,
         device: str | torch.device,
+        *,
+        configure_environment: bool = True,
     ) -> None:
         self.model = model.to(device).eval()
         self.tokenizer = tokenizer
         self.environment = environment
-        self.environment.configure_from_tokenizer(tokenizer)
+        if configure_environment:
+            self.environment.configure_from_tokenizer(tokenizer)
         self.device = torch.device(device)
         self.candidates_scored = 0
         self.action_tokens_scored = 0

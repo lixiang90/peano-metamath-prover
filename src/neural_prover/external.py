@@ -38,13 +38,13 @@ class ExternalVerificationResult:
 
 
 def discover_metamath_executable(configured: str | Path | None = None) -> str | None:
-    candidates = []
-    if configured:
-        candidates.append(str(configured))
     environment = os.environ.get("METAMATH_EXECUTABLE")
-    if environment:
-        candidates.append(environment)
-    candidates.extend(("metamath", "metamath-exe", "metamath.exe"))
+    # An explicit missing executable must not silently select a different one.
+    candidates = (
+        [str(configured)] if configured else
+        [environment] if environment else
+        ["metamath", "metamath-exe", "metamath.exe"]
+    )
     for candidate in candidates:
         resolved = shutil.which(candidate)
         if resolved:

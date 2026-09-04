@@ -26,23 +26,25 @@ def audit_corpus_actions(
     corpus = Path(corpus_directory)
     tokenizer = MetamathTokenizer.load(corpus / "tokenizer.json")
     environment = BackwardEnvironment(database)
+    environment.configure_from_tokenizer(tokenizer)
     counts: dict[str, dict[str, int]] = {}
     failures: list[dict] = []
     for split in ("train", "validation", "test"):
         valid = 0
         examples = load_examples(corpus / f"{split}.jsonl")
         for example in examples:
-            theorem = tokenizer.theorem_from_state_tokens(
-                example.state_tokens,
-                database,
-                name=f"audit_{example.example_id}",
-            )
             try:
+                theorem = tokenizer.theorem_from_state_tokens(
+                    example.state_tokens,
+                    database,
+                    name=f"audit_{example.example_id}",
+                )
                 tactic = parse_tactic_tokens(
                     example.action_tokens,
                     theorem,
                     tokenizer,
                     database,
+                    environment=environment,
                 )
                 environment.apply(
                     ProofState.from_theorem(theorem),
@@ -71,6 +73,7 @@ def audit_corpus_actions(
         ),
         "invalid_actions": len(failures),
         "failures": failures,
+        "environment": environment.configuration_record(),
     }
     if destination is not None:
         Path(destination).write_text(
@@ -99,6 +102,7 @@ def audit_scale_corpus(
     )
     tokenizer = MetamathTokenizer.load(corpus / "tokenizer.json")
     environment = BackwardEnvironment(database)
+    environment.configure_from_tokenizer(tokenizer)
     split_counts = manifest["counts"]
     total = sum(int(value) for value in split_counts.values())
     wanted = min(max(0, sample_size), total)
@@ -145,6 +149,7 @@ def audit_scale_corpus(
                         theorem,
                         tokenizer,
                         database,
+                        environment=environment,
                     )
                     environment.apply(
                         ProofState.from_theorem(theorem),
@@ -182,6 +187,7 @@ def audit_scale_corpus(
         "duplicate_ids_in_sample": duplicates,
         "maximum_sampled_state_tokens": maximum_state,
         "maximum_sampled_action_tokens": maximum_action,
+        "environment": environment.configuration_record(),
         "failures": failures,
     }
     if destination is not None:

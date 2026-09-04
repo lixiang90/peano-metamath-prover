@@ -371,6 +371,10 @@ def build_parser() -> argparse.ArgumentParser:
     scale_evaluate.add_argument("--examples", type=int, default=256)
     scale_evaluate.add_argument("--device", default="auto")
     scale_evaluate.add_argument("--seed", type=int, default=20260801)
+    for command in (evaluate, evaluate_mcts, prove):
+        command.add_argument("--no-model-target-hints", action="store_true")
+        command.add_argument("--no-inference-target-guidance", action="store_true")
+        command.add_argument("--external-timeout-seconds", type=float, default=60.0)
     return parser
 
 
@@ -522,6 +526,9 @@ def main(argv: list[str] | None = None) -> int:
             args.database,
             args.output,
             EvaluationConfig(
+                model_target_hints=not args.no_model_target_hints,
+                inference_target_guidance=not args.no_inference_target_guidance,
+                external_timeout_seconds=args.external_timeout_seconds,
                 device=args.device,
                 easy_simulations=args.easy_sims,
                 medium_simulations=args.medium_sims,
@@ -557,6 +564,9 @@ def main(argv: list[str] | None = None) -> int:
             args.database,
             args.output,
             MCTSEvaluationConfig(
+                model_target_hints=not args.no_model_target_hints,
+                inference_target_guidance=not args.no_inference_target_guidance,
+                external_timeout_seconds=args.external_timeout_seconds,
                 device=args.device,
                 simulations=args.simulations,
                 max_search_depth=args.max_depth,
@@ -891,11 +901,15 @@ def main(argv: list[str] | None = None) -> int:
         environment = BackwardEnvironment(
             database, excluded_assertions=case.excluded_labels
         )
+        environment.configure_from_tokenizer(
+            tokenizer, target_guidance=not args.no_inference_target_guidance
+        )
         neural = TransformerPolicy(
             model,
-            tokenizer,
+            tokenizer.with_target_hints(not args.no_model_target_hints),
             environment,
             device,
+            configure_environment=False,
         )
         if args.policy == "uniform":
             policy = UniformPolicy()
@@ -919,6 +933,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = {
             "case_id": args.case_id,
             "policy": args.policy,
+            "environment": environment.configuration_record(),
             "solved": result.search.solved,
             "simulations": result.search.simulations,
             "actions": [
@@ -939,6 +954,7 @@ def main(argv: list[str] | None = None) -> int:
                 certificate,
                 args.database,
                 executable=args.external_verifier,
+                timeout_seconds=args.external_timeout_seconds,
             )
             payload["internal_verified"] = True
             payload["external_verification"] = external.to_record()
