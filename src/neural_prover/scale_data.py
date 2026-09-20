@@ -225,14 +225,8 @@ def _action_tokens(
         ]
     assertion = environment.assertions[tactic.rule]
     canonical = tokenizer.canonical_variables(theorem)
-    order = [
-        floating.expr.args[0].op for floating in assertion.floating
-    ] or list(assertion.variable_types)
-    return tokenizer.tactic_tokens(
-        tactic.rule,
-        tactic.substitution_dict(),
-        canonical,
-        variable_order=order,
+    return tokenizer.assertion_tactic_tokens(
+        assertion, tactic.substitution_dict(), canonical,
     )
 
 

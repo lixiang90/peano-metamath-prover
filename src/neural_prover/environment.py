@@ -96,6 +96,10 @@ class ProofState:
         return self.goals[0]
 
     def as_theorem(self, name: str = "_proof_state") -> Theorem:
+        """Project the current goal for theorem APIs, not state serialization.
+
+        Use MetamathTokenizer.proof_state_tokens to preserve the full queue.
+        """
         if not self.goals:
             conclusion = Node("|-", (Node("_solved"),))
         else:
@@ -1042,12 +1046,16 @@ class BackwardEnvironment:
 
 def parse_tactic_tokens(
     tokens: Iterable[str],
-    state_theorem: Theorem,
+    state_theorem: Theorem | ProofState,
     tokenizer: MetamathTokenizer,
     database: Database,
     *,
     environment: BackwardEnvironment | None = None,
+    variables: CanonicalVariables | None = None,
 ) -> Tactic:
+    if isinstance(state_theorem, ProofState):
+        variables = variables or tokenizer.proof_state_variables(state_theorem)
+        state_theorem = state_theorem.as_theorem()
     sequence = list(tokens)
     if "<EOS>" in sequence:
         sequence = sequence[:sequence.index("<EOS>") + 1]
@@ -1059,7 +1067,7 @@ def parse_tactic_tokens(
             raise InvalidTactic(
                 "lemma action lacks LEMMA delimiters"
             ) from exc
-        canonical = tokenizer.canonical_variables(state_theorem)
+        canonical = variables or tokenizer.canonical_variables(state_theorem)
         parser = MetamathParser()
         parser.database = database
         old_types = dict(database.variable_types)
@@ -1108,7 +1116,7 @@ def parse_tactic_tokens(
     rule = rules.get(rule_name)
     if rule is None:
         raise InvalidTactic(f"unknown rule {rule_name!r}")
-    canonical = tokenizer.canonical_variables(state_theorem)
+    canonical = variables or tokenizer.canonical_variables(state_theorem)
     parser = MetamathParser()
     parser.database = database
     old_types = dict(database.variable_types)

@@ -179,6 +179,22 @@ def _hypothesis_label(theorem: Theorem, expr: Node) -> str:
     raise ValueError(f"proof requires an unavailable hypothesis: {expr}")
 
 
+def _ordered_application_proof(
+    assertion: Theorem,
+    floating_proofs: list[list[str]],
+    essential_proofs: list[list[str]],
+) -> list[str]:
+    """Place hypothesis proofs in the assertion's Metamath stack order."""
+    if assertion.hypothesis_order:
+        groups = {"f": floating_proofs, "e": essential_proofs}
+        fragments = [groups[kind][index] for kind, index in assertion.hypothesis_order]
+    else:
+        # In-memory generated assertions are exported with all canonical
+        # floating declarations before their essential declarations.
+        fragments = [*floating_proofs, *essential_proofs]
+    return [label for fragment in fragments for label in fragment] + [assertion.name]
+
+
 def _application_proof(
     assertion: Theorem,
     mapping: dict[str, Node],
@@ -186,7 +202,7 @@ def _application_proof(
     store: TheoremDatabase,
     compiler: _SyntaxCompiler,
 ) -> list[str]:
-    labels: list[str] = []
+    floating_proofs: list[list[str]] = []
     floating_order: list[tuple[str, str]] = []
     if assertion.floating:
         for floating in assertion.floating:
@@ -197,11 +213,14 @@ def _application_proof(
         # Their export order is canonical rather than dict-insertion based.
         floating_order.extend(sorted(assertion.variable_types.items()))
     for variable, typecode in floating_order:
-        labels.extend(compiler.compile(typecode, mapping.get(variable, Node(variable))))
-    for hypothesis in assertion.hypotheses:
-        labels.append(_hypothesis_label(current, _instantiate(hypothesis.expr, mapping)))
-    labels.append(assertion.name)
-    return labels
+        floating_proofs.append(
+            compiler.compile(typecode, mapping.get(variable, Node(variable)))
+        )
+    essential_proofs = [
+        [_hypothesis_label(current, _instantiate(hypothesis.expr, mapping))]
+        for hypothesis in assertion.hypotheses
+    ]
+    return _ordered_application_proof(assertion, floating_proofs, essential_proofs)
 
 
 def _generated_proof(
@@ -224,7 +243,7 @@ def _generated_proof(
         variable: proof.substitution.get(f"__rule_{variable}", Node(variable))
         for variable in rule.variable_types
     }
-    labels: list[str] = []
+    floating_proofs: list[list[str]] = []
     floating_order = [
         (floating.expr.args[0].op, floating.expr.op)
         for floating in rule.floating
@@ -232,14 +251,15 @@ def _generated_proof(
     if not floating_order:
         floating_order = sorted(rule.variable_types.items())
     for variable, typecode in floating_order:
-        labels.extend(compiler.compile(typecode, rule_mapping[variable]))
+        floating_proofs.append(compiler.compile(typecode, rule_mapping[variable]))
 
+    essential_proofs: list[list[str]] = []
     for index, premise in enumerate(rule.hypotheses):
         parent_id = proof.premise_map[index]
         if parent_id is None:
-            labels.append(
+            essential_proofs.append([
                 _hypothesis_label(theorem, _instantiate(premise.expr, rule_mapping))
-            )
+            ])
             continue
         parent = store[parent_id]
         parent_mapping = {
@@ -248,11 +268,10 @@ def _generated_proof(
             )
             for variable in parent.variable_types
         }
-        labels.extend(
+        essential_proofs.append(
             _application_proof(parent, parent_mapping, theorem, store, compiler)
         )
-    labels.append(rule.name)
-    return labels
+    return _ordered_application_proof(rule, floating_proofs, essential_proofs)
 
 
 def export_metamath(

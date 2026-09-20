@@ -80,6 +80,7 @@ def _canonicalize(theorem: Theorem) -> tuple[Theorem, tuple]:
             Hypothesis(h.label, visit(h.expr))
             for h in theorem.floating
         ),
+        hypothesis_order=theorem.hypothesis_order,
         kind=theorem.kind,
         source_tokens=theorem.source_tokens,
         declaration_index=theorem.declaration_index,

@@ -69,6 +69,14 @@ def _seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _records_from_shards(corpus: Path, shards: list[dict]) -> Iterator[dict]:
+    for shard in shards:
+        with gzip.open(corpus / shard["path"], "rt", encoding="utf-8") as stream:
+            for line in stream:
+                if line.strip():
+                    yield json.loads(line)
+
+
 def _shuffled_records(
     corpus: Path,
     split: str,
@@ -84,23 +92,16 @@ def _shuffled_records(
         shards = list(manifest["shards"][split])
         rng.shuffle(shards)
         buffer: list[dict] = []
-        for shard in shards:
-            with gzip.open(
-                corpus / shard["path"],
-                "rt",
-                encoding="utf-8",
-            ) as stream:
-                for line in stream:
-                    if not line.strip():
-                        continue
-                    buffer.append(json.loads(line))
-                    if len(buffer) >= buffer_size:
-                        index = rng.randrange(len(buffer))
-                        buffer[index], buffer[-1] = (
-                            buffer[-1],
-                            buffer[index],
-                        )
-                        yield buffer.pop()
+        has_records = False
+        for record in _records_from_shards(corpus, shards):
+            has_records = True
+            buffer.append(record)
+            if len(buffer) >= buffer_size:
+                index = rng.randrange(len(buffer))
+                buffer[index], buffer[-1] = buffer[-1], buffer[index]
+                yield buffer.pop()
+        if not has_records:
+            raise ValueError(f"scale corpus split {split!r} is empty")
         while buffer:
             index = rng.randrange(len(buffer))
             buffer[index], buffer[-1] = buffer[-1], buffer[index]
@@ -119,6 +120,10 @@ class _ResumableRecordStream:
         buffer_size: int,
         consumed: int = 0,
     ) -> None:
+        self._corpus = corpus
+        self._split = split
+        self._known_lengths: set[int] = set()
+        self._lengths_complete = False
         self._iterator = _shuffled_records(
             corpus,
             split,
@@ -129,6 +134,54 @@ class _ResumableRecordStream:
         for _ in range(consumed):
             next(self._iterator)
             self.consumed += 1
+
+    def require_token_ranges(self, ranges: list[tuple[int, int]]) -> None:
+        """Check actual records without consuming the shuffled training stream.
+
+        Check all planned ranges in one pass and stop once each has a witness.
+        Later batches reuse those lengths; they do not rescan the corpus.  An
+        exhausted scan is cached too, so invalid ranges fail deterministically.
+        """
+
+        pending = [
+            (minimum, maximum)
+            for minimum, maximum in ranges
+            if not any(
+                minimum <= length <= maximum for length in self._known_lengths
+            )
+        ]
+        if not pending:
+            return
+        for minimum, maximum in pending:
+            if minimum > maximum:
+                raise ValueError(
+                    f"invalid token range [{minimum}, {maximum}] "
+                    f"for scale corpus split {self._split!r}"
+                )
+        if not self._lengths_complete:
+            manifest = json.loads(
+                (self._corpus / "manifest.json").read_text(encoding="utf-8")
+            )
+            for record in _records_from_shards(
+                self._corpus, manifest["shards"][self._split]
+            ):
+                length = max(len(record["state"]), len(record["action"]))
+                self._known_lengths.add(length)
+                pending = [
+                    (minimum, maximum)
+                    for minimum, maximum in pending
+                    if not minimum <= length <= maximum
+                ]
+                if not pending:
+                    return
+            self._lengths_complete = True
+        if not self._known_lengths:
+            raise ValueError(f"scale corpus split {self._split!r} is empty")
+        minimum, maximum = pending[0]
+        raise ValueError(
+            f"scale corpus split {self._split!r} has no records with token "
+            f"length in [{minimum}, {maximum}] (length is max(state, action))"
+        )
 
     def __iter__(self) -> "_ResumableRecordStream":
         return self
@@ -221,9 +274,21 @@ def _next_batch(
     *,
     minimum_tokens: int = 0,
 ) -> dict[str, Tensor]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if minimum_tokens > maximum_tokens:
+        raise ValueError("minimum_tokens must not exceed maximum_tokens")
+    if isinstance(records, _ResumableRecordStream):
+        records.require_token_ranges([(minimum_tokens, maximum_tokens)])
     selected: list[dict] = []
     while len(selected) < batch_size:
-        record = next(records)
+        try:
+            record = next(records)
+        except StopIteration as error:
+            raise ValueError(
+                "record stream ended before a full batch was available in "
+                f"token range [{minimum_tokens}, {maximum_tokens}]"
+            ) from error
         length = max(len(record["state"]), len(record["action"]))
         if length > maximum_tokens or length < minimum_tokens:
             continue
@@ -470,11 +535,34 @@ def train_scale_model(
         manifest["configuration"]["max_action_tokens"]
     )
     maximum_context = max(maximum_state, maximum_action)
-    if maximum_context <= cfg.long_context_threshold:
+    if (
+        cfg.require_long_context_step
+        and maximum_context <= cfg.long_context_threshold
+    ):
         raise ValueError(
             "scale corpus does not provide a context above "
             f"{cfg.long_context_threshold} tokens"
         )
+    train_records = _ResumableRecordStream(
+        corpus, "train", cfg.seed, cfg.shuffle_buffer,
+    )
+    validation_records = _ResumableRecordStream(
+        corpus, "validation", cfg.seed + 17,
+        max(1, min(cfg.shuffle_buffer, 512)),
+    )
+    training_ranges: list[tuple[int, int]] = []
+    # A one-step, one-microbatch run can consist solely of the long batch.
+    if not (
+        cfg.require_long_context_step
+        and cfg.max_steps == 1
+        and cfg.gradient_accumulation_steps == 1
+    ):
+        training_ranges.append((0, _context_limit(0, maximum_context, cfg)))
+    if cfg.require_long_context_step:
+        training_ranges.append((cfg.long_context_threshold + 1, maximum_context))
+    train_records.require_token_ranges(training_ranges)
+    if cfg.validation_batches > 0:
+        validation_records.require_token_ranges([(0, maximum_context)])
     device = _device(cfg.device)
     model_config = ProofTransformerConfig(
         vocab_size=len(tokenizer),
@@ -584,19 +672,8 @@ def train_scale_model(
         )
         if scheduler_state:
             scheduler.load_state_dict(scheduler_state)
-    train_records = _ResumableRecordStream(
-        corpus,
-        "train",
-        cfg.seed,
-        cfg.shuffle_buffer,
-        int(resume_state.get("train_records_consumed", 0)),
-    )
-    validation_records = _ResumableRecordStream(
-        corpus,
-        "validation",
-        cfg.seed + 17,
-        max(1, min(cfg.shuffle_buffer, 512)),
-    )
+    for _ in range(int(resume_state.get("train_records_consumed", 0))):
+        next(train_records)
     _restore_rng_state(resume_state.get("rng_state"))
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
@@ -856,7 +933,7 @@ def evaluate_scale_checkpoint(
     model.to(device)
     if model.config.vocab_size != len(tokenizer):
         raise ValueError("checkpoint and corpus vocabularies differ")
-    records = _shuffled_records(corpus, split, seed, 512)
+    records = _ResumableRecordStream(corpus, split, seed, 512)
     evaluation_config = ScaleTrainingConfig(
         micro_batch_size=1,
         validation_batches=examples,

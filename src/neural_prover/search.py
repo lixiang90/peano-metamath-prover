@@ -156,11 +156,14 @@ class TransformerPolicy:
     ) -> list[RankedTactic]:
         if not tactics:
             return []
-        theorem = state.as_theorem()
-        canonical = self.tokenizer.canonical_variables(theorem)
-        serialized_state = self.tokenizer.state_tokens(
-            theorem, canonical
-        )
+        try:
+            canonical = self.tokenizer.proof_state_variables(state)
+            serialized_state = self.tokenizer.proof_state_tokens(state, canonical)
+            encoded_state = self.tokenizer.encode(serialized_state)
+        except ValueError:
+            # Old vocabularies may lack pending-lemma controls. Preserve the
+            # full symbolic state instead of dropping obligations to score it.
+            return HeuristicPolicy(self.environment).rank(state, tactics)
         if len(serialized_state) > self.model.config.max_state_tokens:
             # Search can create a larger conjunction of open goals than any
             # supervised sample.  Never truncate a formal state: that could
@@ -168,9 +171,7 @@ class TransformerPolicy:
             # The kernel-backed symbolic policy is the safe OOD fallback.
             return HeuristicPolicy(self.environment).rank(state, tactics)
         state_ids = torch.tensor(
-            [self.tokenizer.encode(
-                serialized_state
-            )],
+            [encoded_state],
             dtype=torch.long,
             device=self.device,
         )
@@ -196,16 +197,8 @@ class TransformerPolicy:
                 )
             else:
                 assertion = self.environment.assertions[tactic.rule]
-                order = [
-                    floating.expr.args[0].op
-                    for floating in assertion.floating
-                ] or list(assertion.variable_types)
-                tokens = self.tokenizer.tactic_tokens(
-                    tactic.rule,
-                    tactic.substitution_dict(),
-                    canonical,
-                    variable_order=order,
-                    rule_variable_types=assertion.variable_types,
+                tokens = self.tokenizer.assertion_tactic_tokens(
+                    assertion, tactic.substitution_dict(), canonical,
                 )
             ids = self.tokenizer.encode(tokens)
             if len(ids) > self.model.config.max_action_tokens:
@@ -267,9 +260,12 @@ class TransformerPolicy:
         for row, (_, _, next_state) in enumerate(entries):
             if next_state.solved:
                 continue
-            next_theorem = next_state.as_theorem()
-            next_tokens = self.tokenizer.state_tokens(next_theorem)
-            ids = self.tokenizer.encode(next_tokens)
+            try:
+                next_tokens = self.tokenizer.proof_state_tokens(next_state)
+                ids = self.tokenizer.encode(next_tokens)
+            except ValueError:
+                next_values[row] = 0.0
+                continue
             if len(ids) <= self.model.config.max_state_tokens:
                 unsolved_rows.append(row)
                 unsolved_ids.append(ids)

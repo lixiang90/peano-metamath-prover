@@ -8,7 +8,7 @@
 ## 上手与复现
 
 - [训练与评估指南](training-and-evaluation.md)：安装迁移、接口矩阵、PA+、MCTS、
-  HTPS 和 Scale 工作流，命令以统一主线为准。
+  HTPS 和 Scale 工作流，以及动作／完整状态编码修复后的数据迁移，命令以统一主线为准。
 - [系统架构](architecture.md)：三个模块的职责、共享可信边界与搜索后端差异。
 - [贡献约定](../CONTRIBUTING.md)：测试、证明可靠性、文档与发布包要求。
 

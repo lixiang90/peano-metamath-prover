@@ -51,6 +51,7 @@ def _standardize(theorem: Theorem, namespace: str) -> Theorem:
             Hypothesis(h.label, _rename_node(h.expr, renaming))
             for h in theorem.floating
         ),
+        hypothesis_order=theorem.hypothesis_order,
         kind=theorem.kind,
         source_tokens=theorem.source_tokens,
         id=theorem.id,

@@ -39,6 +39,19 @@ latent 用显式 `init-latent`；PA+ 词表扩容用 `upgrade-pa-plus`，输出�
 旧 PA+ `legacy-unordered` 桥动作不能沿用，须按
 [认证记录](pa-plus-certification.md)重新生成、审计和训练。
 
+动作与状态编码修复后，监督语料、Scale 和搜索回放统一使用类型化的规则绑定槽位。
+MCTS / best-first 的模型输入和回放键包含完整、有序的目标队列；重复的 `<GOAL>` 段
+表示剩余义务，`<GOAL> <LEMMA> ... <END_LEMMA>` 表示证明完成后才激活的引理。
+单目标输入与词表 token ID 保持不变。完整状态使用 `proof_state_tokens` /
+`proof_state_from_tokens`，动作解码可直接接收 `ProofState`；`as_theorem()` 仅用于
+当前目标的定理接口，不得作为多目标状态的序列化结果。
+
+修复前生成的 Scale 语料及 MCTS / HTPS 回放应在新的输出目录重新生成。旧多目标回放
+已丢失后续目标，不能只转换 token 恢复；已训练权重也不会自动修复，需要重新评估或
+微调。旧词表无法表达待激活引理时，搜索退回符号评分，并跳过无法完整编码的回放状态。
+MCTS 成功路径的价值标签与 backup 一致，按剩余步骤扣罚；Scale 在分配模型之前根据
+实际记录检查课程长度、末步长上下文及验证范围，无匹配样本或空 split 会明确报错。
+
 ## 2. 工作流选择与当前接线
 
 | 能力 | 基础 / MCTS | HTPS | Scale |

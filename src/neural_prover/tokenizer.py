@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import TYPE_CHECKING, Iterable, Iterator
 
 from metamath_generator.model import (
     Database,
@@ -14,6 +14,9 @@ from metamath_generator.model import (
     normalized_pair,
 )
 from metamath_generator.parser import MetamathParser, ParseError
+
+if TYPE_CHECKING:
+    from .environment import ProofState
 
 
 INSTRUCTION_TOKENS = (
@@ -96,6 +99,8 @@ class CanonicalVariables:
         cls,
         theorem: Theorem,
         max_variables_per_type: int,
+        *,
+        goals: Iterable[Node] | None = None,
     ) -> "CanonicalVariables":
         counters: dict[str, int] = {}
         actual_to_token: dict[str, str] = {}
@@ -118,7 +123,7 @@ class CanonicalVariables:
 
         expressions = [
             *(hypothesis.expr for hypothesis in theorem.hypotheses),
-            theorem.conclusion,
+            *(goals if goals is not None else (theorem.conclusion,)),
         ]
         for expression in expressions:
             for node in expression.walk():
@@ -300,11 +305,31 @@ class MetamathTokenizer:
     def decode(self, token_ids: Iterable[int]) -> list[str]:
         return [self.id_to_token[int(token_id)] for token_id in token_ids]
 
-    def canonical_variables(self, theorem: Theorem) -> CanonicalVariables:
+    def canonical_variables(
+        self, theorem: Theorem, *, goals: Iterable[Node] | None = None,
+    ) -> CanonicalVariables:
         return CanonicalVariables.from_theorem(
             theorem,
             self.config.max_variables_per_type,
+            goals=goals,
         )
+
+    def proof_state_variables(self, state: "ProofState") -> CanonicalVariables:
+        return self.canonical_variables(state.as_theorem(), goals=state.goals)
+
+    def proof_state_tokens(
+        self,
+        state: "ProofState",
+        variables: CanonicalVariables | None = None,
+    ) -> list[str]:
+        """Encode every ordered obligation, including pending lemma commits.
+
+        Repeated GOAL sections use existing vocabulary, so single-goal inputs
+        and checkpoint token IDs remain unchanged. LEMMA sections represent
+        delayed activation, not an already available hypothesis.
+        """
+        canonical = variables or self.proof_state_variables(state)
+        return self.state_tokens(state.as_theorem(), canonical, goals=state.goals)
 
     @staticmethod
     def _node_tokens(
@@ -319,8 +344,13 @@ class MetamathTokenizer:
         self,
         theorem: Theorem,
         variables: CanonicalVariables | None = None,
+        *,
+        goals: Iterable[Node] | None = None,
     ) -> list[str]:
-        canonical = variables or self.canonical_variables(theorem)
+        from .environment import LEMMA_COMMIT_OP
+
+        obligations = tuple(goals) if goals is not None else (theorem.conclusion,)
+        canonical = variables or self.canonical_variables(theorem, goals=obligations)
         tokens = ["<BOS>", "<STATE>"]
         tokens.extend(self._pa_plus_context_tokens(theorem, canonical))
         tokens.append("<HYPOTHESES>")
@@ -331,8 +361,16 @@ class MetamathTokenizer:
                 tokens.append("<END_HYP>")
         else:
             tokens.append("<NO_HYP>")
-        tokens.append("<GOAL>")
-        tokens.extend(self._node_tokens(theorem.conclusion, canonical))
+        for goal in obligations:
+            tokens.append("<GOAL>")
+            if goal.op == LEMMA_COMMIT_OP:
+                if len(goal.args) != 1:
+                    raise ValueError("malformed pending lemma commit")
+                tokens.append("<LEMMA>")
+                tokens.extend(self._node_tokens(goal.args[0], canonical))
+                tokens.append("<END_LEMMA>")
+            else:
+                tokens.extend(self._node_tokens(goal, canonical))
         tokens.append("<DV>")
         for left, right in sorted(theorem.d_constraints):
             tokens.extend([
@@ -433,12 +471,22 @@ class MetamathTokenizer:
             value = theorem.proof.substitution.get(key)
             if value is not None and value != Node(key):
                 substitution[variable] = value
+        return self.assertion_tactic_tokens(rule, substitution, canonical)
+
+    def assertion_tactic_tokens(
+        self,
+        assertion: Theorem,
+        substitution: dict[str, Node],
+        variables: CanonicalVariables,
+    ) -> list[str]:
+        """Shared typed binding protocol for data, replay and inference."""
+        order = [h.expr.args[0].op for h in assertion.floating]
         return self.tactic_tokens(
-            rule.name,
+            assertion.name,
             substitution,
-            canonical,
-            variable_order=floating_order,
-            rule_variable_types=rule.variable_types,
+            variables,
+            variable_order=order or sorted(assertion.variable_types),
+            rule_variable_types=assertion.variable_types,
         )
 
     def tactic_tokens(
@@ -588,7 +636,24 @@ class MetamathTokenizer:
         *,
         name: str = "_decoded_state",
     ) -> Theorem:
-        """Decode the lossless formal state format back into a theorem."""
+        """Decode a single-goal theorem without silently dropping obligations."""
+        state = self.proof_state_from_tokens(tokens, database)
+        if len(state.goals) != 1 or state.current_goal.op != "|-":
+            raise ValueError("expected one logical goal; use proof_state_from_tokens")
+        theorem = state.as_theorem(name)
+        theorem.hypotheses = [
+            Hypothesis(f"{name}_h{index}", expr)
+            for index, expr in enumerate(state.hypotheses)
+        ]
+        return theorem
+
+    def proof_state_from_tokens(
+        self,
+        tokens: Iterable[str],
+        database: Database,
+    ) -> "ProofState":
+        """Decode the complete goal queue, preserving pending lemma activation."""
+        from .environment import LEMMA_COMMIT_OP, ProofState
 
         sequence = list(tokens)
         variable_types = {
@@ -601,58 +666,64 @@ class MetamathTokenizer:
         parser.database = database
         old_types = dict(database.variable_types)
         database.variable_types.update(variable_types)
-        hypotheses: list[Hypothesis] = []
+        hypotheses: list[Node] = []
+        goals: list[Node] = []
         d_constraints: set[tuple[str, str]] = set()
         try:
             cursor = sequence.index("<HYPOTHESES>") + 1
-            while cursor < len(sequence) and sequence[cursor] != "<GOAL>":
+            while (
+                cursor < len(sequence)
+                and sequence[cursor] not in {"<GOAL>", "<DV>"}
+            ):
                 if sequence[cursor] == "<NO_HYP>":
                     cursor += 1
                     continue
                 if sequence[cursor] != "<HYP>":
                     raise ValueError("malformed HYPOTHESES section")
                 end = sequence.index("<END_HYP>", cursor + 1)
-                expression = parser.parse_expression(
-                    sequence[cursor + 1:end]
-                )
-                hypotheses.append(Hypothesis(
-                    f"{name}_h{len(hypotheses)}",
-                    expression,
-                ))
+                hypotheses.append(parser.parse_expression(sequence[cursor + 1:end]))
                 cursor = end + 1
-            if cursor >= len(sequence) or sequence[cursor] != "<GOAL>":
-                raise ValueError("state has no GOAL section")
-            goal_end = sequence.index("<DV>", cursor + 1)
-            conclusion = parser.parse_expression(
-                sequence[cursor + 1:goal_end]
-            )
-            cursor = goal_end + 1
-            while (
-                cursor < len(sequence)
-                and sequence[cursor] != "<END_STATE>"
-            ):
-                if (
-                    sequence[cursor] != "<DV_PAIR>"
-                    or cursor + 2 >= len(sequence)
+            while cursor < len(sequence) and sequence[cursor] == "<GOAL>":
+                end = cursor + 1
+                while (
+                    end < len(sequence)
+                    and sequence[end] not in {"<GOAL>", "<DV>"}
                 ):
+                    end += 1
+                body = sequence[cursor + 1:end]
+                if body and body[0] == "<LEMMA>":
+                    if body[-1] != "<END_LEMMA>":
+                        raise ValueError("malformed pending lemma commit")
+                    lemma = parser.parse_expression(body[1:-1])
+                    if lemma.op != "|-" or len(lemma.args) != 1:
+                        raise ValueError("pending lemma must be a logical goal")
+                    goals.append(Node(LEMMA_COMMIT_OP, (lemma,)))
+                else:
+                    goal = parser.parse_expression(body)
+                    if goal.op != "|-" or len(goal.args) != 1:
+                        raise ValueError("obligation must be a logical goal")
+                    goals.append(goal)
+                cursor = end
+            if cursor >= len(sequence) or sequence[cursor] != "<DV>":
+                raise ValueError("state has no DV section")
+            cursor += 1
+            while cursor < len(sequence) and sequence[cursor] != "<END_STATE>":
+                if sequence[cursor] != "<DV_PAIR>" or cursor + 2 >= len(sequence):
                     raise ValueError("malformed DV section")
                 d_constraints.add(normalized_pair(
-                    sequence[cursor + 1],
-                    sequence[cursor + 2],
+                    sequence[cursor + 1], sequence[cursor + 2],
                 ))
                 cursor += 3
+            if cursor >= len(sequence):
+                raise ValueError("state has no END_STATE marker")
         except (ValueError, ParseError) as exc:
             raise ValueError(f"cannot decode proof state: {exc}") from exc
         finally:
             database.variable_types.clear()
             database.variable_types.update(old_types)
-        return Theorem(
-            name,
-            hypotheses,
-            conclusion,
-            d_constraints=d_constraints,
-            variable_types=variable_types,
-            kind="proof_state",
+        return ProofState(
+            tuple(hypotheses), tuple(goals), frozenset(d_constraints),
+            tuple(sorted(variable_types.items())),
         )
 
     def save(self, path: str | Path) -> None:

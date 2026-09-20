@@ -85,23 +85,15 @@ class ReplayBuffer:
                 "<END_ACTION>",
                 "<EOS>",
             ]
-        theorem = state.as_theorem()
-        canonical = tokenizer.canonical_variables(theorem)
+        canonical = tokenizer.proof_state_variables(state)
         if tactic.rule == PROPOSE_LEMMA_RULE:
             lemma = tactic.substitution_dict().get(LEMMA_BINDING)
             if lemma is None:
                 raise ValueError("lemma tactic has no lemma payload")
             return tokenizer.lemma_tactic_tokens(lemma, canonical)
         assertion = environment.assertions[tactic.rule]
-        order = [
-            floating.expr.args[0].op
-            for floating in assertion.floating
-        ] or list(assertion.variable_types)
-        return tokenizer.tactic_tokens(
-            tactic.rule,
-            tactic.substitution_dict(),
-            canonical,
-            variable_order=order,
+        return tokenizer.assertion_tactic_tokens(
+            assertion, tactic.substitution_dict(), canonical,
         )
 
     def add_mcts(
@@ -115,10 +107,14 @@ class ReplayBuffer:
     ) -> int:
         added = 0
         for experience in result.experiences:
-            theorem = experience.state.as_theorem()
-            state_ids = tuple(tokenizer.encode(
-                tokenizer.state_tokens(theorem)
-            ))
+            try:
+                state_ids = tuple(tokenizer.encode(
+                    tokenizer.proof_state_tokens(experience.state)
+                ))
+            except ValueError:
+                # A legacy vocabulary cannot always represent pending lemma
+                # controls. Never train on a truncated projection instead.
+                continue
             if (
                 max_state_tokens is not None
                 and len(state_ids) > max_state_tokens

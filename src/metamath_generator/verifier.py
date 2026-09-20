@@ -72,23 +72,29 @@ def verify(theorem: Theorem, database: Database) -> None:
                 f"assertion {label!r} is not declared before "
                 f"{theorem.name}"
             )
-        hypotheses = [*assertion.floating, *assertion.hypotheses]
+        hypotheses = assertion.mandatory_hypotheses
         if len(stack) < len(hypotheses):
             raise VerificationError(f"stack underflow while applying {label}")
         actuals = stack[len(stack) - len(hypotheses):] if hypotheses else []
         if hypotheses:
             del stack[-len(hypotheses):]
 
+        actual_by_label = {
+            expected.label: actual for expected, actual in zip(hypotheses, actuals)
+        }
+        # Collect every floating substitution before checking essentials;
+        # $f and $e entries occupy their original, possibly interleaved slots.
         subst: dict[str, Node] = {}
-        for expected, actual in zip(assertion.floating, actuals):
+        for expected in assertion.floating:
+            actual = actual_by_label[expected.label]
             variable = expected.expr.args[0].op
             if actual.op != expected.expr.op or len(actual.args) != 1:
                 raise VerificationError(
                     f"type mismatch for {variable} while applying {label}"
                 )
             subst[variable] = actual.args[0]
-        essential_actuals = actuals[len(assertion.floating):]
-        for expected, actual in zip(assertion.hypotheses, essential_actuals):
+        for expected in assertion.hypotheses:
+            actual = actual_by_label[expected.label]
             wanted = substitute_simultaneous(expected.expr, subst)
             if wanted != actual:
                 raise VerificationError(

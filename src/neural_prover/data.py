@@ -243,12 +243,8 @@ def _source_examples(
             variable: Node(variable)
             for variable in floating_order
         }
-        action_tokens = tuple(tokenizer.tactic_tokens(
-            theorem.name,
-            substitution,
-            canonical,
-            variable_order=floating_order,
-            rule_variable_types=theorem.variable_types,
+        action_tokens = tuple(tokenizer.assertion_tactic_tokens(
+            theorem, substitution, canonical,
         ))
         if (
             len(state_tokens) > config.max_state_tokens

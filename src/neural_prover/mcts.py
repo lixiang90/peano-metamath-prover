@@ -174,7 +174,7 @@ class ProofMCTS:
         self._expanded_nodes = []
         root = MCTSNode(initial, 0)
         solution: list[Transition] | None = None
-        solution_node_ids: set[int] = set()
+        solution_returns: dict[int, float] = {}
         simulations_done = 0
         for simulation in range(self.config.simulations):
             simulations_done = simulation + 1
@@ -188,9 +188,6 @@ class ProofMCTS:
                 if node.state.solved:
                     leaf_value = 1.0
                     solution = transitions
-                    solution_node_ids = {
-                        id(item) for item in visited_nodes
-                    }
                     break
                 if node.depth >= self.config.max_depth:
                     leaf_value = 0.0
@@ -215,10 +212,16 @@ class ProofMCTS:
                 node = edge.child
                 visited_nodes.append(node)
             value = leaf_value
-            for edge in reversed(path):
+            for parent, edge in zip(
+                reversed(visited_nodes[:-1]), reversed(path)
+            ):
                 value = max(0.0, value - self.config.step_penalty)
                 edge.visits += 1
                 edge.value_sum += value
+                if solution is not None:
+                    # Supervised values use the same remaining-path return
+                    # as backup, independent of depth from the search root.
+                    solution_returns[id(parent)] = value
             if solution is not None:
                 break
 
@@ -228,21 +231,14 @@ class ProofMCTS:
             proven_dead_end = node.expanded and not node.edges
             if total == 0 and not proven_dead_end:
                 continue
-            solved_path = id(node) in solution_node_ids
+            solved_path = id(node) in solution_returns
             experiences.append(MCTSExperience(
                 state=node.state,
                 tactics=tuple(edge.tactic for edge in node.edges),
                 visit_probabilities=tuple(
                     edge.visits / total for edge in node.edges
                 ),
-                value_target=max(
-                    0.0,
-                    (
-                        1.0 - self.config.step_penalty * node.depth
-                        if solved_path
-                        else 0.0
-                    ),
-                ),
+                value_target=solution_returns.get(id(node), 0.0),
                 policy_target_valid=solved_path,
                 value_target_valid=solved_path or proven_dead_end,
             ))

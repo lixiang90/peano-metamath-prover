@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from metamath_generator.database import TheoremDatabase
-from metamath_generator.export import _SyntaxCompiler
+from metamath_generator.export import _SyntaxCompiler, _ordered_application_proof
 from metamath_generator.model import (
     Database,
     Hypothesis,
@@ -132,7 +132,7 @@ def _compile_tree(
             f"{transition.tactic.rule!r}"
         )
     substitution = dict(transition.resolved_substitution)
-    labels: list[str] = []
+    floating_proofs: list[list[str]] = []
     floating = [
         (item.expr.args[0].op, item.expr.op)
         for item in assertion.floating
@@ -146,7 +146,7 @@ def _compile_tree(
                 f"missing substitution for {variable} in "
                 f"{assertion.name}"
             )
-        labels.extend(compiler.compile(typecode, value))
+        floating_proofs.append(compiler.compile(typecode, value))
 
     if assertion.name not in database.logical_assertions:
         if assertion.hypotheses:
@@ -178,6 +178,7 @@ def _compile_tree(
                 expanded.extend(replacement)
         return expanded
 
+    essential_proofs: list[list[str]] = []
     children = iter(node.children)
     for hypothesis in assertion.hypotheses:
         instance = substitute_simultaneous(
@@ -185,11 +186,11 @@ def _compile_tree(
             substitution,
         )
         if any(h.expr == instance for h in theorem.hypotheses):
-            labels.append(_hypothesis_label(theorem, instance))
+            essential_proofs.append([_hypothesis_label(theorem, instance)])
             continue
         local = available.get(instance)
         if local is not None:
-            labels.extend(local)
+            essential_proofs.append(list(local))
             continue
         try:
             child = next(children)
@@ -202,7 +203,7 @@ def _compile_tree(
                 f"trace proves {child.transition.before.current_goal}, "
                 f"expected {instance}"
             )
-        labels.extend(_compile_tree(
+        essential_proofs.append(_compile_tree(
             child,
             theorem,
             database,
@@ -215,8 +216,7 @@ def _compile_tree(
         pass
     else:
         raise CertificateError("proof node has too many children")
-    labels.append(assertion.name)
-    return labels
+    return _ordered_application_proof(assertion, floating_proofs, essential_proofs)
 
 
 def compile_certificate(

@@ -83,6 +83,17 @@ class Theorem:
     declaration_index: int = -1
     active_hypothesis_labels: frozenset[str] = frozenset()
     id: int | None = None
+    # Interleaved mandatory $f/$e declarations, stored as (kind, group index)
+    # so renaming variables or hypothesis labels does not change their order.
+    # Generated assertions use the export convention: all $f, then all $e.
+    hypothesis_order: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def mandatory_hypotheses(self) -> tuple[Hypothesis, ...]:
+        if self.hypothesis_order:
+            groups = {"f": self.floating, "e": self.hypotheses}
+            return tuple(groups[kind][index] for kind, index in self.hypothesis_order)
+        return (*self.floating, *self.hypotheses)
 
     @property
     def proof_depth(self) -> int:

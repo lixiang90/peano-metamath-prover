@@ -303,6 +303,16 @@ class MetamathParser:
                 set(self._d_constraints) if kind == "$p" else set()
             ),
             floating=floating,
+            hypothesis_order=tuple(
+                (kind, index)
+                for _, kind, index in sorted([
+                    (self.database.label_order[h.label], "f", index)
+                    for index, h in enumerate(floating)
+                ] + [
+                    (self.database.label_order[h.label], "e", index)
+                    for index, h in enumerate(hypotheses)
+                ])
+            ),
             kind="theorem" if kind == "$p" else "axiom",
             source_tokens=source_tokens,
             declaration_index=declaration_index,
