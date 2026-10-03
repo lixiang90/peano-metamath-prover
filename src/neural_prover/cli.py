@@ -344,6 +344,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--gradient-accumulation-steps", type=int, default=4
     )
     scale_train.add_argument("--learning-rate", type=float, default=1e-4)
+    scale_train.add_argument("--candidate-loss-weight", type=float, default=0.0)
     scale_train.add_argument("--warmup-steps", type=int, default=10)
     scale_train.add_argument("--device", default="auto")
     scale_train.add_argument("--d-model", type=int, default=768)
@@ -733,6 +734,7 @@ def main(argv: list[str] | None = None) -> int:
                 gradient_accumulation_steps=
                     args.gradient_accumulation_steps,
                 learning_rate=args.learning_rate,
+                candidate_loss_weight=args.candidate_loss_weight,
                 warmup_steps=args.warmup_steps,
                 device=args.device,
                 d_model=args.d_model,
@@ -808,6 +810,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(summary, ensure_ascii=False))
         return 0
     if args.command == "prove-decomposed":
+        from .data_contract import validate_checkpoint_tokenizer
         from .decomposed import (
             DecomposedProver,
             DecomposedProverConfig,
@@ -825,10 +828,11 @@ def main(argv: list[str] | None = None) -> int:
         case = cases[args.case_id]
         target = case.theorem(database)
         tokenizer = MetamathTokenizer.load(args.tokenizer)
-        model, _ = LatentProofTransformer.load_checkpoint(
+        model, checkpoint_payload = LatentProofTransformer.load_checkpoint(
             args.checkpoint,
             map_location=args.device if args.device != "auto" else "cpu",
         )
+        validate_checkpoint_tokenizer(model, checkpoint_payload, tokenizer)
         prover = DecomposedProver(
             database,
             model,
@@ -879,6 +883,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "prove":
         import torch
 
+        from .data_contract import validate_checkpoint_tokenizer
         from .mcts import MCTSConfig, ProofMCTS
         from .model import ProofTransformer
         from .search import (
@@ -905,10 +910,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.device == "auto" and torch.cuda.is_available()
             else ("cpu" if args.device == "auto" else args.device)
         )
-        model, _ = ProofTransformer.load_checkpoint(
+        model, checkpoint_payload = ProofTransformer.load_checkpoint(
             args.checkpoint,
             map_location=device,
         )
+        validate_checkpoint_tokenizer(model, checkpoint_payload, tokenizer)
         environment = BackwardEnvironment(
             database, excluded_assertions=case.excluded_labels
         )

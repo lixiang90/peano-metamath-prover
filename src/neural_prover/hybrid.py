@@ -17,6 +17,9 @@ class HybridGeneratorConfig:
 class HybridActions:
     deterministic: tuple[Tactic, ...]
     constructions: tuple[Tactic, ...]
+    # Only an independently exhaustive symbolic generator may set this.
+    # The built-in bounded candidate enumeration deliberately leaves it false.
+    exhaustive: bool = False
 
     @property
     def all(self) -> list[Tactic]:

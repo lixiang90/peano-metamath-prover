@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import random
+from collections import deque
 from dataclasses import dataclass, field, replace
 from typing import Protocol
 
@@ -373,10 +374,63 @@ class HyperTreeProofSearch:
                 return (child,)
         return ()
 
-    def _select_edge(self, node: GoalNode) -> int | None:
+    def _productive_nodes(self, forbidden: frozenset[int]) -> set[int]:
+        """Find finite partial proofs without revisiting the current ancestry.
+
+        Unexpanded and solved nodes are bases.  An AND edge is productive
+        only when all its currently active children are; one such OR choice
+        suffices for its parent.  The least fixed point excludes closed
+        cyclic components in linear graph work instead of enumerating all
+        simple paths through them.  This is a selection filter, never a
+        global invalidity or an unprovability claim.
+        """
+        productive = {
+            node_id for node_id, node in enumerate(self.nodes)
+            if node_id not in forbidden and not node.invalid
+            and (node.solved or not node.expanded)
+        }
+        ready = deque(productive)
+        dependents: list[list[int]] = [[] for _ in self.nodes]
+        pending: list[list[int]] = []
+        for node_id, node in enumerate(self.nodes):
+            if node_id in forbidden or node.invalid or node_id in productive:
+                continue
+            for edge in node.edges:
+                if edge.invalid:
+                    continue
+                children = set(self._active_children(edge))
+                if any(
+                    child in forbidden or self.nodes[child].invalid
+                    for child in children
+                ):
+                    continue
+                if not children:
+                    productive.add(node_id)
+                    ready.append(node_id)
+                    break
+                edge_id = len(pending)
+                pending.append([node_id, len(children)])
+                for child in children:
+                    dependents[child].append(edge_id)
+        while ready:
+            child = ready.popleft()
+            for edge_id in dependents[child]:
+                pending[edge_id][1] -= 1
+                parent, remaining = pending[edge_id]
+                if remaining == 0 and parent not in productive:
+                    productive.add(parent)
+                    ready.append(parent)
+        return productive
+
+    def _select_edge(
+        self,
+        node: GoalNode,
+        excluded: set[int] | None = None,
+    ) -> int | None:
         candidates = [
             index for index, edge in enumerate(node.edges)
             if not edge.invalid and not edge.solved
+            and (excluded is None or index not in excluded)
         ]
         if not candidates:
             return None
@@ -409,32 +463,56 @@ class HyperTreeProofSearch:
         ancestors: frozenset[int],
         selected: list[tuple[int, int]],
         frontier: list[int],
-    ) -> None:
+    ) -> bool:
+        """Select an acyclic partial proof, backtracking locally on cycles.
+
+        An edge that loops into this path can still be useful from another
+        root or transposition.  Never turn that path-dependent obstruction
+        into a permanent, global invalid edge.
+        """
         if len(frontier) >= self.config.max_frontier:
-            return
+            return True
+        if node_id in ancestors:
+            self._cycles_rejected += 1
+            return False
         node = self.nodes[node_id]
         node.visits += 1
-        if node.solved or node.invalid:
-            return
+        if node.solved:
+            return True
+        if node.invalid:
+            return False
         if not node.expanded:
             frontier.append(node_id)
-            return
-        edge_index = self._select_edge(node)
-        if edge_index is None:
-            return
-        edge = node.edges[edge_index]
-        edge.virtual_visits += 1
-        selected.append((node_id, edge_index))
-        active = self._active_children(edge)
+            return True
         lineage = ancestors | {node_id}
-        for child_id in active:
-            if child_id in lineage:
-                edge.invalid = True
-                self._cycles_rejected += 1
-                continue
-            self._select_hypertree(
-                child_id, lineage, selected, frontier
-            )
+        productive = self._productive_nodes(lineage)
+        excluded = {
+            index for index, edge in enumerate(node.edges)
+            if not edge.invalid and not edge.solved
+            and any(child not in productive for child in self._active_children(edge))
+        }
+        self._cycles_rejected += len(excluded)
+        while (edge_index := self._select_edge(node, excluded)) is not None:
+            edge = node.edges[edge_index]
+            selection_start = len(selected)
+            frontier_start = len(frontier)
+            edge.virtual_visits += 1
+            selected.append((node_id, edge_index))
+            if all(
+                self._select_hypertree(child, lineage, selected, frontier)
+                for child in self._active_children(edge)
+            ):
+                return True
+            # This AND choice has no acyclic continuation in the current
+            # ancestry.  Undo its pending selection before trying another
+            # OR choice, including any virtual visits below this edge.
+            for parent_id, selected_edge in selected[selection_start:]:
+                pending = self.nodes[parent_id].edges[selected_edge]
+                pending.virtual_visits = max(0, pending.virtual_visits - 1)
+            del selected[selection_start:]
+            del frontier[frontier_start:]
+            excluded.add(edge_index)
+        return False
 
     def _backup(self, selected: list[tuple[int, int]]) -> None:
         for node_id, edge_index in reversed(selected):

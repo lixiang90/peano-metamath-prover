@@ -38,7 +38,8 @@ P0–P2 的研究门槛：新增权重训练和规模对照实验应在现有可
 HTPS 已在本仓库 `src/htps_prover/` 提供按递归骨架切分的 forward DAG 数据、
 latent 监督训练、超图搜索和同步 replay 闭环；这不意味着已完成规模能力验收。
 HTPS 评估、collect 和 closed-loop 已支持强制外部验证。PA+ 目录参数已接入 HTPS forward
-生成与监督训练；完整 Scale 路径仍待模板集成。详细边界见[HTPS 设计](htps-design.md)和
+生成与监督训练；2026-10-03 已接入 Scale 的 PA+ 桥模板解析和实例化，
+并提供[本地长时训练与监控](pa-plus-rtx3090-session.md)。详细边界见[HTPS 设计](htps-design.md)和
 [PA+ 神经管线](pa-plus-neural-training.md)。
 
 认证补齐已将 PA+ 定义桥接入普通/分片语料审计，统一四策略的定义桥、有界项与

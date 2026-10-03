@@ -11,6 +11,8 @@ from torch.nn import functional as F
 
 from .environment import (
     LEMMA_BINDING,
+    LEMMA_COMMIT_OP,
+    LEMMA_RELEASE_OP,
     PROPOSE_LEMMA_RULE,
     BackwardEnvironment,
     InvalidTactic,
@@ -71,30 +73,39 @@ class HeuristicPolicy:
             if self.environment is not None:
                 try:
                     after = self.environment.apply(state, tactic).after
+                    # Scope controls are scheduled bookkeeping, not proof
+                    # obligations.  Counting them unfairly penalizes cuts.
+                    controls = {LEMMA_COMMIT_OP, LEMMA_RELEASE_OP}
+                    before_goals = tuple(
+                        goal for goal in state.goals if goal.op not in controls
+                    )
+                    after_goals = tuple(
+                        goal for goal in after.goals if goal.op not in controls
+                    )
                     score += 10.0 if after.solved else 0.0
-                    score -= 0.5 * len(after.goals)
+                    score -= 0.5 * len(after_goals)
                     score += 5.0 * (
-                        len(state.goals) - len(after.goals)
+                        len(before_goals) - len(after_goals)
                     )
                     direct = sum(
                         self.environment.directly_closable(after, goal)
-                        for goal in after.goals
+                        for goal in after_goals
                     )
                     # A kernel-recognized direct closure is strictly more
                     # reliable than a bounded look-ahead prediction.
                     score += 4.0 * direct
                     near = 0
                     if (
-                        after.goals
-                        and direct + near == len(after.goals)
+                        after_goals
+                        and direct + near == len(after_goals)
                     ):
                         score += 4.0
-                    next_value = 1.0 / (1.0 + len(after.goals))
-                    if after.goals:
+                    next_value = 1.0 / (1.0 + len(after_goals))
+                    if after_goals:
                         next_value = max(
                             next_value,
                             (direct + 0.8 * near)
-                            / len(after.goals),
+                            / len(after_goals),
                         )
                 except InvalidTactic:
                     continue

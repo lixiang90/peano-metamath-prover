@@ -52,6 +52,8 @@ class MCTSNode:
     edges: list[MCTSEdge] = field(default_factory=list)
     expanded: bool = False
     visits: int = 0
+    proven_dead_end: bool = False
+    leaf_value: float = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +129,11 @@ class ProofMCTS:
         root: bool,
     ) -> float:
         actions = self.action_generator.actions(node.state)
+        # Policy filtering (length/vocabulary), branching limits, and bounded
+        # symbolic enumeration are search limits, not proofs of failure.
+        node.proven_dead_end = (
+            not actions.all and getattr(actions, "exhaustive", False)
+        )
         rank_hybrid = getattr(self.policy, "rank_hybrid", None)
         if rank_hybrid is not None:
             ranked = rank_hybrid(node.state, actions)
@@ -147,8 +154,10 @@ class ProofMCTS:
         node.expanded = True
         self._expanded_nodes.append(node)
         if not ranked:
-            return 0.0
-        return max(item.next_value for item in ranked)
+            node.leaf_value = 0.0 if node.proven_dead_end else 0.5
+        else:
+            node.leaf_value = max(item.next_value for item in ranked)
+        return node.leaf_value
 
     def _select(self, node: MCTSNode) -> MCTSEdge:
         total = max(1, sum(edge.visits for edge in node.edges))
@@ -199,7 +208,7 @@ class ProofMCTS:
                     )
                     break
                 if not node.edges:
-                    leaf_value = 0.0
+                    leaf_value = node.leaf_value
                     break
                 edge = self._select(node)
                 path.append(edge)
@@ -222,13 +231,13 @@ class ProofMCTS:
                     # Supervised values use the same remaining-path return
                     # as backup, independent of depth from the search root.
                     solution_returns[id(parent)] = value
-            if solution is not None:
+            if solution is not None or (root.expanded and not root.edges):
                 break
 
         experiences: list[MCTSExperience] = []
         for node in self._expanded_nodes:
             total = sum(edge.visits for edge in node.edges)
-            proven_dead_end = node.expanded and not node.edges
+            proven_dead_end = node.proven_dead_end
             if total == 0 and not proven_dead_end:
                 continue
             solved_path = id(node) in solution_returns
@@ -284,6 +293,7 @@ class ProofMCTS:
             ),
             experiences=tuple(experiences),
             outcome=("certifiable_solution" if solution is not None
+                     else "proven_dead_end" if root.proven_dead_end
                      else "budget_exhausted"),
         )
 

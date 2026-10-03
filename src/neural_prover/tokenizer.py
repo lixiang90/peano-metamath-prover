@@ -347,7 +347,7 @@ class MetamathTokenizer:
         *,
         goals: Iterable[Node] | None = None,
     ) -> list[str]:
-        from .environment import LEMMA_COMMIT_OP
+        from .environment import LEMMA_COMMIT_OP, LEMMA_RELEASE_OP
 
         obligations = tuple(goals) if goals is not None else (theorem.conclusion,)
         canonical = variables or self.canonical_variables(theorem, goals=obligations)
@@ -363,12 +363,18 @@ class MetamathTokenizer:
             tokens.append("<NO_HYP>")
         for goal in obligations:
             tokens.append("<GOAL>")
-            if goal.op == LEMMA_COMMIT_OP:
+            if goal.op in {LEMMA_COMMIT_OP, LEMMA_RELEASE_OP}:
                 if len(goal.args) != 1:
-                    raise ValueError("malformed pending lemma commit")
-                tokens.append("<LEMMA>")
+                    raise ValueError("malformed lemma scope marker")
+                # Reuse existing control tokens to preserve vocabulary IDs.
+                # A leading END_LEMMA denotes scope exit; a leading LEMMA
+                # (terminated by END_LEMMA) denotes delayed activation.
+                tokens.append(
+                    "<LEMMA>" if goal.op == LEMMA_COMMIT_OP else "<END_LEMMA>"
+                )
                 tokens.extend(self._node_tokens(goal.args[0], canonical))
-                tokens.append("<END_LEMMA>")
+                if goal.op == LEMMA_COMMIT_OP:
+                    tokens.append("<END_LEMMA>")
             else:
                 tokens.extend(self._node_tokens(goal, canonical))
         tokens.append("<DV>")
@@ -652,8 +658,8 @@ class MetamathTokenizer:
         tokens: Iterable[str],
         database: Database,
     ) -> "ProofState":
-        """Decode the complete goal queue, preserving pending lemma activation."""
-        from .environment import LEMMA_COMMIT_OP, ProofState
+        """Decode all obligations, including lemma activation and scope exit."""
+        from .environment import LEMMA_COMMIT_OP, LEMMA_RELEASE_OP, ProofState
 
         sequence = list(tokens)
         variable_types = {
@@ -698,6 +704,11 @@ class MetamathTokenizer:
                     if lemma.op != "|-" or len(lemma.args) != 1:
                         raise ValueError("pending lemma must be a logical goal")
                     goals.append(Node(LEMMA_COMMIT_OP, (lemma,)))
+                elif body and body[0] == "<END_LEMMA>":
+                    lemma = parser.parse_expression(body[1:])
+                    if lemma.op != "|-" or len(lemma.args) != 1:
+                        raise ValueError("released lemma must be a logical goal")
+                    goals.append(Node(LEMMA_RELEASE_OP, (lemma,)))
                 else:
                     goal = parser.parse_expression(body)
                     if goal.op != "|-" or len(goal.args) != 1:

@@ -15,6 +15,7 @@ from metamath_generator.parser import parse
 from .benchmark import BenchmarkCase, load_benchmarks
 from .certificate import CertificateError, compile_certificate
 from .data import load_examples
+from .data_contract import validate_checkpoint_tokenizer
 from .environment import BackwardEnvironment, ProofState
 from .verification import verification_record
 from .hybrid import HybridActionGenerator
@@ -337,8 +338,7 @@ def evaluate_checkpoint(
         checkpoint,
         map_location=device,
     )
-    if model.config.vocab_size != len(tokenizer):
-        raise ValueError("checkpoint and tokenizer vocabulary sizes differ")
+    validate_checkpoint_tokenizer(model, payload, tokenizer)
     model.to(device).eval()
     supervised = evaluate_supervised(
         model,
@@ -429,8 +429,7 @@ def evaluate_mcts_checkpoint(
         checkpoint,
         map_location=device,
     )
-    if model.config.vocab_size != len(tokenizer):
-        raise ValueError("checkpoint and tokenizer vocabulary sizes differ")
+    validate_checkpoint_tokenizer(model, payload, tokenizer)
     model.to(device).eval()
     database = parse(database_path)
     all_cases = load_benchmarks(benchmark_path)

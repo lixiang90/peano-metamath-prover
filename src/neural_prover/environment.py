@@ -36,6 +36,7 @@ class InvalidTactic(ValueError):
 PROPOSE_LEMMA_RULE = "<PROPOSE_LEMMA>"
 LEMMA_BINDING = "__lemma_value__"
 LEMMA_COMMIT_OP = "__lemma_commit__"
+LEMMA_RELEASE_OP = "__lemma_release__"
 
 
 @dataclass(slots=True)

@@ -7,7 +7,11 @@ from pathlib import Path
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.nn.utils.rnn import pack_padded_sequence
 from torch.utils.checkpoint import checkpoint
+
+
+CANDIDATE_ENCODER_VERSION = "bidirectional-gru-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,9 +66,17 @@ class ProofTransformer(nn.Module):
             nn.Linear(config.d_model, 1),
         )
         # A candidate-index head chooses among symbolically enumerated tactics.
-        # It never generates a substitution token-by-token.  Existing v1
-        # checkpoints can load without these weights and keep using the
-        # autoregressive scorer until MCTS replay trains the head.
+        # A narrow recurrent encoder preserves token order before pooling.
+        # Averaging token + position embeddings would discard the association
+        # between a token and its position, aliasing different substitutions.
+        candidate_width = max(1, min(64, config.d_model // 2))
+        self.candidate_encoder = nn.GRU(
+            config.d_model, candidate_width, batch_first=True,
+            bidirectional=True,
+        )
+        self.candidate_projection = nn.Linear(
+            candidate_width * 2, config.d_model,
+        )
         self.candidate_state = nn.Linear(config.d_model, config.d_model)
         self.candidate_action = nn.Linear(config.d_model, config.d_model)
         self.candidate_score = nn.Sequential(
@@ -172,20 +184,30 @@ class ProofTransformer(nn.Module):
         state_pooled = (memory * state_weights).sum(dim=1) / (
             state_weights.sum(dim=1).clamp_min(1.0)
         )
-        candidate_padding = candidate_ids.eq(self.config.pad_id)
-        candidate = self._embed(candidate_ids, self.action_position)
-        candidate_weights = (~candidate_padding).unsqueeze(-1).to(
-            candidate.dtype
-        )
-        candidate_pooled = (
-            (candidate * candidate_weights).sum(dim=1)
-            / candidate_weights.sum(dim=1).clamp_min(1.0)
-        )
+        candidate_pooled = self._encode_candidate_actions(candidate_ids)
         hidden = (
             self.candidate_state(state_pooled).expand_as(candidate_pooled)
             + self.candidate_action(candidate_pooled)
         )
         return self.candidate_score(hidden).squeeze(-1), value
+
+    def _encode_candidate_actions(self, candidate_ids: Tensor) -> Tensor:
+        """Encode ordered actions, excluding right padding in both directions."""
+
+        if candidate_ids.ndim != 2 or candidate_ids.shape[0] == 0:
+            raise ValueError("candidate_ids must contain at least one action")
+        lengths = candidate_ids.ne(self.config.pad_id).sum(dim=1)
+        if bool((lengths == 0).any()):
+            raise ValueError("candidate actions cannot be empty")
+        candidate = self._embed(candidate_ids, self.action_position)
+        packed = pack_padded_sequence(
+            candidate, lengths.cpu(), batch_first=True, enforce_sorted=False,
+        )
+        _, hidden = self.candidate_encoder(packed)
+        # The final forward/backward states summarize the complete action,
+        # including its rule, substitution bindings and expression structure.
+        pooled = torch.cat((hidden[0], hidden[1]), dim=-1)
+        return self.candidate_projection(pooled)
 
     def score_candidate_matrix(
         self,
@@ -199,15 +221,7 @@ class ProofTransformer(nn.Module):
         state_pooled = (memory * state_weights).sum(dim=1) / (
             state_weights.sum(dim=1).clamp_min(1.0)
         )
-        candidate_padding = candidate_ids.eq(self.config.pad_id)
-        candidate = self._embed(candidate_ids, self.action_position)
-        candidate_weights = (~candidate_padding).unsqueeze(-1).to(
-            candidate.dtype
-        )
-        candidate_pooled = (
-            (candidate * candidate_weights).sum(dim=1)
-            / candidate_weights.sum(dim=1).clamp_min(1.0)
-        )
+        candidate_pooled = self._encode_candidate_actions(candidate_ids)
         hidden = (
             self.candidate_state(state_pooled)[:, None, :]
             + self.candidate_action(candidate_pooled)[None, :, :]
@@ -379,10 +393,9 @@ class ProofTransformer(nn.Module):
         metadata: dict | None = None,
     ) -> None:
         checkpoint_metadata = dict(metadata or {})
-        checkpoint_metadata["candidate_policy"] = {
-            "trained": bool(self.candidate_head_trained),
-            "mode": "finite-kernel-candidate-index",
-        }
+        checkpoint_metadata["candidate_policy"] = self._candidate_policy_metadata()
+        destination = Path(path)
+        temporary = destination.with_name(destination.name + ".tmp")
         torch.save(
             {
                 "format": "peano-proof-transformer-v1",
@@ -391,8 +404,9 @@ class ProofTransformer(nn.Module):
                 "optimizer_state": optimizer_state,
                 "metadata": checkpoint_metadata,
             },
-            Path(path),
+            temporary,
         )
+        temporary.replace(destination)
 
     @classmethod
     def load_checkpoint(
@@ -409,22 +423,53 @@ class ProofTransformer(nn.Module):
         if payload.get("format") != "peano-proof-transformer-v1":
             raise ValueError("unsupported proof Transformer checkpoint")
         model = cls(ProofTransformerConfig(**payload["config"]))
-        missing, unexpected = model.load_state_dict(
-            payload["model_state"], strict=False
-        )
-        allowed_missing = {
-            name
-            for name in model.state_dict()
-            if name.startswith("candidate_")
+        model._load_checkpoint_weights(payload)
+        return model, payload
+
+    def _candidate_policy_metadata(self) -> dict:
+        return {
+            "trained": bool(self.candidate_head_trained),
+            "mode": "finite-kernel-candidate-index",
+            "encoder": CANDIDATE_ENCODER_VERSION,
         }
+
+    def _load_checkpoint_weights(self, payload: dict) -> None:
+        """Migrate legacy candidate heads without treating new weights as trained.
+
+        The main autoregressive policy remains usable.  Candidate training can
+        subsequently initialize the ordered encoder from this migrated model.
+        Both base and latent checkpoints use this compatibility contract.
+        """
+
+        metadata = payload.get("metadata", {})
+        policy = metadata.get("candidate_policy", {})
+        encoder = policy.get("encoder")
+        if encoder not in {None, CANDIDATE_ENCODER_VERSION}:
+            raise ValueError(f"unsupported candidate encoder: {encoder}")
+        legacy = encoder is None
+        missing, unexpected = self.load_state_dict(
+            payload["model_state"], strict=False,
+        )
+        allowed_missing = (
+            {name for name in self.state_dict() if name.startswith("candidate_")}
+            if legacy else set()
+        )
         if unexpected or set(missing) - allowed_missing:
             raise ValueError(
                 "checkpoint state is incompatible: "
                 f"missing={missing}, unexpected={unexpected}"
             )
-        model.candidate_head_trained = bool(
-            payload.get("metadata", {})
-            .get("candidate_policy", {})
-            .get("trained", False)
+        self.candidate_head_trained = (
+            not legacy and bool(policy.get("trained", False))
         )
-        return model, payload
+        if legacy:
+            payload["metadata"] = {
+                **metadata,
+                "candidate_policy_migration": {
+                    "from_encoder": "legacy-token-mean",
+                    "to_encoder": CANDIDATE_ENCODER_VERSION,
+                    "scoring_fallback": "autoregressive_bootstrap",
+                    "retraining_required": True,
+                    "optimizer_restart_required": bool(missing),
+                },
+            }

@@ -205,3 +205,22 @@ def test_preflight_checks_only_ranges_that_training_will_use(
 def test_finite_record_stream_reports_an_incomplete_batch() -> None:
     with pytest.raises(ValueError, match="record stream ended"):
         _next_batch(iter([]), 1, 0, 16)
+
+
+def test_ground_replay_is_training_only_and_exactly_resumable(tmp_path):
+    corpus = _write_corpus(tmp_path, train=[8, 9, 10])
+    path = corpus / 'ground.jsonl.gz'
+    with gzip.open(path, 'wt', encoding='utf-8') as stream:
+        stream.write(json.dumps({'id':'ground','state':[1,2], 'action':[2,3], 'value':1.0})+'\n')
+    manifest_path = corpus / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    manifest['training_replay'] = {'path':path.name,'interval':4}
+    manifest_path.write_text(json.dumps(manifest))
+    stream = _ResumableRecordStream(corpus, 'train', 7, 3)
+    stream.require_token_ranges([(0,2)])  # Witness exists only in ground replay.
+    records = list(islice(stream, 20))
+    assert [x['id']=='ground' for x in records] == [i%4==3 for i in range(20)]
+    resumed = _ResumableRecordStream(corpus, 'train', 7, 3, consumed=7)
+    assert list(islice(resumed,13)) == records[7:]
+    validation = list(islice(_shuffled_records(corpus,'validation',7,3),20))
+    assert all(x['id']!='ground' for x in validation)

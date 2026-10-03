@@ -7,12 +7,13 @@ import random
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 import torch
 from torch import Tensor
 from torch.nn import functional as F
 
+from .data_contract import tokenizer_fingerprint, validate_checkpoint_tokenizer
 from .model import ProofTransformer, ProofTransformerConfig
 from .tokenizer import MetamathTokenizer
 
@@ -31,6 +32,7 @@ class ScaleTrainingConfig:
     warmup_steps: int = 10
     weight_decay: float = 0.1
     value_loss_weight: float = 0.25
+    candidate_loss_weight: float = 0.0
     gradient_clip: float = 1.0
     seed: int = 20260729
     device: str = "auto"
@@ -77,7 +79,7 @@ def _records_from_shards(corpus: Path, shards: list[dict]) -> Iterator[dict]:
                     yield json.loads(line)
 
 
-def _shuffled_records(
+def _raw_shuffled_records(
     corpus: Path,
     split: str,
     seed: int,
@@ -107,6 +109,25 @@ def _shuffled_records(
             buffer[index], buffer[-1] = buffer[-1], buffer[index]
             yield buffer.pop()
         epoch += 1
+
+
+def _shuffled_records(corpus: Path, split: str, seed: int, buffer_size: int) -> Iterator[dict]:
+    raw = _raw_shuffled_records(corpus, split, seed, buffer_size)
+    manifest = json.loads((corpus / "manifest.json").read_text(encoding="utf-8"))
+    replay = manifest.get("training_replay") if split == "train" else None
+    if not replay:
+        yield from raw
+        return
+    records = list(_records_from_shards(corpus, [replay]))
+    interval = int(replay["interval"])
+    if not records or interval < 2:
+        raise ValueError("training replay requires records and an interval >= 2")
+    rng = random.Random(seed + 7919)
+    for index, record in enumerate(raw, start=1):
+        # Rare certified ground instances have no free metavariables to augment.
+        # Mix them into the training stream, without duplicating the disk corpus
+        # or changing the natural validation/test distributions.
+        yield rng.choice(records) if index % interval == 0 else record
 
 
 class _ResumableRecordStream:
@@ -162,9 +183,10 @@ class _ResumableRecordStream:
             manifest = json.loads(
                 (self._corpus / "manifest.json").read_text(encoding="utf-8")
             )
-            for record in _records_from_shards(
-                self._corpus, manifest["shards"][self._split]
-            ):
+            shards = list(manifest["shards"][self._split])
+            if self._split == "train" and manifest.get("training_replay"):
+                shards.append(manifest["training_replay"])
+            for record in _records_from_shards(self._corpus, shards):
                 length = max(len(record["state"]), len(record["action"]))
                 self._known_lengths.add(length)
                 pending = [
@@ -255,6 +277,7 @@ def _collate(records: list[dict], pad_id: int) -> dict[str, Tensor]:
         ),
         "action_input": actions[:, :-1],
         "action_target": actions[:, 1:],
+        "action_full": actions,
         "value_target": torch.tensor(
             [float(record["value"]) for record in records],
             dtype=torch.float32,
@@ -506,8 +529,13 @@ def train_scale_model(
     config: ScaleTrainingConfig | None = None,
     *,
     resume_from: str | Path | None = None,
+    on_step: Callable[[dict], bool | None] | None = None,
 ) -> dict:
-    """Train/resume the first ~100M formal proof Transformer."""
+    """Train/resume the first ~100M formal proof Transformer.
+
+    on_step receives a copy of each completed step. Return True to save an
+    exact-resume checkpoint and stop gracefully after that step.
+    """
 
     cfg = config or ScaleTrainingConfig()
     if cfg.max_steps <= 0:
@@ -525,6 +553,7 @@ def train_scale_model(
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
     tokenizer = MetamathTokenizer.load(corpus / "tokenizer.json")
+    fingerprint = tokenizer_fingerprint(tokenizer)
     manifest = json.loads(
         (corpus / "manifest.json").read_text(encoding="utf-8")
     )
@@ -587,6 +616,18 @@ def train_scale_model(
             resume_from,
             map_location="cpu",
         )
+        validate_checkpoint_tokenizer(model, resume_payload, tokenizer)
+        resume_metadata = resume_payload.get("metadata", {})
+        if (
+            resume_metadata.get("candidate_policy_migration", {}).get(
+                "optimizer_restart_required"
+            )
+            and resume_metadata.get("candidate_policy", {}).get("encoder") is None
+        ):
+            raise ValueError(
+                "legacy candidate encoder requires a fresh optimizer for "
+                "fine-tuning; exact scale resume cannot add new parameters"
+            )
         if model.config != model_config:
             raise ValueError(
                 "resume checkpoint model configuration does not match"
@@ -626,6 +667,9 @@ def train_scale_model(
                 "checkpoint does not contain the exact-resume state: "
                 + ", ".join(sorted(missing_resume_fields))
             )
+        if saved_configuration is not None:
+            saved_configuration = dict(saved_configuration)
+            saved_configuration.setdefault("candidate_loss_weight", 0.0)
         if saved_configuration != _trajectory_configuration(cfg):
             raise ValueError(
                 "resume checkpoint trajectory configuration does not match"
@@ -701,6 +745,7 @@ def train_scale_model(
         step_loss = 0.0
         step_policy_loss = 0.0
         step_value_loss = 0.0
+        step_candidate_loss = 0.0
         step_tokens = 0
         step_examples = 0
         long_context_used = False
@@ -739,9 +784,17 @@ def train_scale_model(
                     ignore_index=tokenizer.pad_id,
                 )
                 value_loss = F.mse_loss(value, value_target)
+                candidate_loss = logits.new_zeros(())
+                if cfg.candidate_loss_weight > 0:
+                    full_actions = batch["action_full"].to(device)
+                    scores, _ = model.score_candidate_matrix(state, full_actions)
+                    positives = full_actions[:, None, :].eq(full_actions[None, :, :]).all(dim=-1)
+                    positive_scores = scores.masked_fill(~positives, float("-inf"))
+                    candidate_loss = (torch.logsumexp(scores, dim=1) - torch.logsumexp(positive_scores, dim=1)).mean()
                 loss = (
                     policy_loss
                     + cfg.value_loss_weight * value_loss
+                    + cfg.candidate_loss_weight * candidate_loss
                 )
                 scaled_loss = (
                     loss / cfg.gradient_accumulation_steps
@@ -753,6 +806,7 @@ def train_scale_model(
             step_loss += float(loss.item())
             step_policy_loss += float(policy_loss.item())
             step_value_loss += float(value_loss.item())
+            step_candidate_loss += float(candidate_loss.item())
             step_tokens += tokens
             step_examples += len(state)
             del logits, value, loss, scaled_loss
@@ -761,12 +815,17 @@ def train_scale_model(
             cfg.gradient_clip,
         )
         optimizer.step()
+        if cfg.candidate_loss_weight > 0:
+            model.candidate_head_trained = True
         scheduler.step()
         total_examples += step_examples
         total_target_tokens += step_tokens
         elapsed = prior_elapsed + time.perf_counter() - started
         record = {
             "step": step + 1,
+            "elapsed_seconds": elapsed,
+            "train_examples_seen": total_examples,
+            "target_tokens_seen": total_target_tokens,
             "context_limit": limit,
             "long_context_used": long_context_used,
             "loss":
@@ -775,6 +834,7 @@ def train_scale_model(
                 step_policy_loss / cfg.gradient_accumulation_steps,
             "value_loss":
                 step_value_loss / cfg.gradient_accumulation_steps,
+            "candidate_loss": step_candidate_loss / cfg.gradient_accumulation_steps,
             "gradient_norm": float(gradient_norm.item()),
             "learning_rate": float(
                 optimizer.param_groups[0]["lr"]
@@ -783,6 +843,9 @@ def train_scale_model(
             "target_tokens_per_second": total_target_tokens / elapsed,
         }
         history.append(record)
+        stop_requested = on_step is not None and on_step(dict(record)) is True
+        if stop_requested:
+            end_step = step + 1
         should_checkpoint = (
             (step + 1) % cfg.checkpoint_every == 0
             or step + 1 == end_step
@@ -802,6 +865,7 @@ def train_scale_model(
                 latest_path,
                 optimizer_state=optimizer.state_dict(),
                 metadata={
+                    "tokenizer_sha256": fingerprint,
                     "training_state": training_state,
                     "latest_metrics": record,
                     "parameter_count": parameter_count,
@@ -820,6 +884,8 @@ def train_scale_model(
                 "parameter_count": parameter_count,
                 "history": history,
             })
+        if stop_requested:
+            break
     if end_step < cfg.max_steps:
         elapsed = prior_elapsed + time.perf_counter() - started
         summary = {
@@ -867,6 +933,7 @@ def train_scale_model(
         final_path,
         optimizer_state=optimizer.state_dict(),
         metadata={
+            "tokenizer_sha256": fingerprint,
             "training_state": final_training_state,
             "validation": validation,
             "parameter_count": parameter_count,
@@ -930,9 +997,8 @@ def evaluate_scale_checkpoint(
         checkpoint,
         map_location=device,
     )
+    validate_checkpoint_tokenizer(model, payload, tokenizer)
     model.to(device)
-    if model.config.vocab_size != len(tokenizer):
-        raise ValueError("checkpoint and corpus vocabularies differ")
     records = _ResumableRecordStream(corpus, split, seed, 512)
     evaluation_config = ScaleTrainingConfig(
         micro_batch_size=1,

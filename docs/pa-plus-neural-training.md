@@ -137,7 +137,8 @@ RTX 3060 Laptop GPU 上完成了一次小型但非纯 CPU 的闭环验证：
 - HTPS 的评估/回放收集/同步闭环已接入可选强制外部验证，未通过时不接受成功路径。
 - HTPS `generate` 已接入 PA+ 目录、有界实例与目标引导，输出 policy/lemma 的
   完整动作审计；基础 `train` 也支持从配套的升级 checkpoint 微调。
-- `build-scale-corpus` 的源模板解析仍待接入 PA+；审计分片能力不等于已经完成
-  Scale 生成集成。
+- 2026-10-03：`build-scale-corpus` 已按 tokenizer 配置 PA+ 环境，并用同一环境解析
+  生成式桥模板；单进程和多进程扩增均有动作回放回归。参见
+  [PA+ RTX 3090 长时训练](pa-plus-rtx3090-session.md)。
 
 命令、实测结果和剩余研究验收见[PA+ 认证与公平评估](pa-plus-certification.md)。

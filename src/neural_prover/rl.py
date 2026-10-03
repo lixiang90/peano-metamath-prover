@@ -12,6 +12,7 @@ from metamath_generator.parser import parse
 
 from .certificate import compile_certificate, verify_certificate
 from .data import load_examples
+from .data_contract import validate_checkpoint_tokenizer
 from .environment import (
     LEMMA_BINDING,
     PROPOSE_LEMMA_RULE,
@@ -107,6 +108,13 @@ class ReplayBuffer:
     ) -> int:
         added = 0
         for experience in result.experiences:
+            if not (
+                experience.policy_target_valid or experience.value_target_valid
+            ):
+                # Censored searches provide no supervised target.  In
+                # particular, do not replace an earlier solved example with
+                # an unknown outcome from an inference or search limit.
+                continue
             try:
                 state_ids = tuple(tokenizer.encode(
                     tokenizer.proof_state_tokens(experience.state)
@@ -292,10 +300,11 @@ def collect_replay_from_corpus(
     candidates = _curriculum_sample(
         candidates, cfg.examples, cfg.seed
     )
-    model, _ = ProofTransformer.load_checkpoint(
+    model, payload = ProofTransformer.load_checkpoint(
         checkpoint,
         map_location=device,
     )
+    validate_checkpoint_tokenizer(model, payload, tokenizer)
     environment = BackwardEnvironment(database)
     neural = TransformerPolicy(
         model,

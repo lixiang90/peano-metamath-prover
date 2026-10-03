@@ -922,6 +922,7 @@ class TorchNeuralTests(unittest.TestCase):
                 decoder_layers=1,
                 dim_feedforward=32,
                 dropout=0.2,
+                candidate_loss_weight=0.35,
                 gradient_checkpointing=False,
                 initial_context_tokens=8,
                 context_warmup_steps=1,
@@ -970,6 +971,37 @@ class TorchNeuralTests(unittest.TestCase):
                 [item["loss"] for item in continuous["history"]],
                 [item["loss"] for item in resumed["history"]],
             )
+
+            observed = []
+            callback_output = root / "callback"
+
+            def stop_after_two(record):
+                observed.append(dict(record))
+                stop = record["step"] == 2
+                record["loss"] = -123  # Observer cannot mutate saved history.
+                return stop
+
+            callback_config = dict(common, checkpoint_every=10)
+            stopped = train_scale_model(
+                corpus, callback_output, ScaleTrainingConfig(**callback_config),
+                on_step=stop_after_two,
+            )
+            self.assertEqual(stopped["status"], "paused")
+            self.assertEqual(stopped["completed_steps"], 2)
+            self.assertEqual(len(observed), 2)
+            self.assertEqual(observed[-1]["train_examples_seen"], 2)
+            self.assertGreater(observed[-1]["elapsed_seconds"], 0)
+            self.assertNotEqual(stopped["history"][-1]["loss"], -123)
+            self.assertFalse((callback_output / "latest.pt.tmp").exists())
+            train_scale_model(
+                corpus, callback_output, ScaleTrainingConfig(**callback_config),
+                resume_from=callback_output / "latest.pt",
+            )
+            callback_model, _ = ProofTransformer.load_checkpoint(
+                callback_output / "final.pt"
+            )
+            for name, expected in uninterrupted_model.state_dict().items():
+                self.assertTrue(torch.equal(expected, callback_model.state_dict()[name]), name)
 
     def test_scale_evaluation_metadata_is_json_safe(self) -> None:
         import torch

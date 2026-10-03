@@ -130,4 +130,5 @@ python -m neural_prover train outputs/pa-finetune/corpus outputs/pa-finetune/mod
   通过，CI 的官方验证器任务包含此路径。完整本地回归共98项通过。
 
 当前数据仍以定义桥与浅搜索为主；35目标引导触达不等于35目标已证。定义族 OOD、
-跨后端公平预算、多种子能力对照及完整 Scale 模板集成仍是后续工作。
+跨后端公平预算和多种子能力对照仍是后续工作。2026-10-03 已另行接入
+[PA+ Scale 桥模板及 RTX 3090 长时训练](pa-plus-rtx3090-session.md)，不改变本页历史 HTPS 验收范围。

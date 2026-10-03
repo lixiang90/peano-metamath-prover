@@ -189,10 +189,7 @@ class LatentProofTransformer(ProofTransformer):
         metadata: dict | None = None,
     ) -> None:
         checkpoint_metadata = dict(metadata or {})
-        checkpoint_metadata["candidate_policy"] = {
-            "trained": bool(self.candidate_head_trained),
-            "mode": "finite-kernel-candidate-index",
-        }
+        checkpoint_metadata["candidate_policy"] = self._candidate_policy_metadata()
         checkpoint_metadata["latent_reasoning"] = {
             "mode": "continuous-vector-chain",
             "formal_state_mutation": False,
@@ -223,12 +220,7 @@ class LatentProofTransformer(ProofTransformer):
             ProofTransformerConfig(**payload["config"]),
             LatentReasoningConfig(**payload["reasoning_config"]),
         )
-        model.load_state_dict(payload["model_state"], strict=True)
-        model.candidate_head_trained = bool(
-            payload.get("metadata", {})
-            .get("candidate_policy", {})
-            .get("trained", False)
-        )
+        model._load_checkpoint_weights(payload)
         return model, payload
 
     @classmethod

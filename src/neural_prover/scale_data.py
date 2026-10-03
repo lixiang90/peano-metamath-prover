@@ -248,6 +248,7 @@ def _templates(
             theorem,
             tokenizer,
             database,
+            environment=environment,
         )
         environment.apply(ProofState.from_theorem(theorem), tactic)
         if any(
@@ -356,6 +357,8 @@ def _one_record(
             "difficulty": template.example.difficulty,
             "base": template.example.example_id,
             "proof_depth": template.example.proof_depth,
+            "generation_kind": template.example.generation_kind,
+            "definition_support": list(template.example.definition_support),
         }
     raise RuntimeError(
         f"could not generate a valid {split} record at index {index}"
@@ -374,6 +377,7 @@ def _initialize_worker(
     base = Path(base_corpus)
     tokenizer = MetamathTokenizer.load(base / "tokenizer.json")
     environment = BackwardEnvironment(database)
+    environment.configure_from_tokenizer(tokenizer)
     _WORKER_CONTEXT.update({
         "tokenizer": tokenizer,
         "environment": environment,
@@ -511,6 +515,7 @@ def build_scale_corpus(
     else:
         database = parse(database_path)
         environment = BackwardEnvironment(database)
+        environment.configure_from_tokenizer(tokenizer)
         split_templates = {
             split: _templates(
                 base / f"{split}.jsonl",

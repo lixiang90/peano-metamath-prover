@@ -7,6 +7,7 @@ from metamath_generator.model import Node
 from .environment import (
     LEMMA_BINDING,
     LEMMA_COMMIT_OP,
+    LEMMA_RELEASE_OP,
     PROPOSE_LEMMA_RULE,
     BackwardEnvironment,
     InvalidTactic,
@@ -52,7 +53,10 @@ class LemmaBackwardEnvironment(BackwardEnvironment):
     Proposing ``L`` while proving ``G`` creates the ordered obligations
     ``Γ ⊢ L`` and ``Γ,L ⊢ G``.  A private marker activates ``L`` only after
     every subgoal in its proof has closed, so an unproved proposal can never
-    be used as an assumption.
+    be used as an assumption.  A matching release marker removes ``L`` when
+    the original goal's entire continuation closes, before any old sibling
+    goals resume.  Thus cuts have the same local scope as certificate macros
+    and independently searched HTPS children.
     """
 
     def __init__(self, *args, max_lemma_nodes: int = 96, **kwargs) -> None:
@@ -67,16 +71,20 @@ class LemmaBackwardEnvironment(BackwardEnvironment):
         self._lemma_transition_cache.clear()
 
     @staticmethod
-    def _normalize_commits(state: ProofState) -> ProofState:
+    def _normalize_scopes(state: ProofState) -> ProofState:
         hypotheses = list(state.hypotheses)
         goals = list(state.goals)
         changed = False
-        while goals and goals[0].op == LEMMA_COMMIT_OP:
+        while goals and goals[0].op in {LEMMA_COMMIT_OP, LEMMA_RELEASE_OP}:
             marker = goals.pop(0)
             if len(marker.args) != 1:
-                raise InvalidTactic("malformed lemma commit marker")
+                raise InvalidTactic("malformed lemma scope marker")
             lemma = marker.args[0]
-            if lemma not in hypotheses:
+            if marker.op == LEMMA_RELEASE_OP:
+                if lemma not in hypotheses:
+                    raise InvalidTactic("cannot release an inactive lemma")
+                hypotheses.remove(lemma)
+            elif lemma not in hypotheses:
                 hypotheses.append(lemma)
             changed = True
         if not changed:
@@ -113,9 +121,10 @@ class LemmaBackwardEnvironment(BackwardEnvironment):
         if not self._well_typed((lemma,), dict(state.variable_types)):
             raise InvalidTactic("intermediate lemma is not well typed")
         marker = Node(LEMMA_COMMIT_OP, (lemma,))
+        release = Node(LEMMA_RELEASE_OP, (lemma,))
         after = ProofState(
             state.hypotheses,
-            (lemma, marker, *state.goals),
+            (lemma, marker, state.current_goal, release, *state.goals[1:]),
             state.d_constraints,
             state.variable_types,
         )
@@ -144,7 +153,7 @@ class LemmaBackwardEnvironment(BackwardEnvironment):
                 raise
         else:
             raw = super().apply(state, tactic)
-            normalized = self._normalize_commits(raw.after)
+            normalized = self._normalize_scopes(raw.after)
             transition = (
                 raw
                 if normalized is raw.after
