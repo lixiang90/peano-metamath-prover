@@ -11,6 +11,10 @@ PA+、MCTS、HTPS、中间引理和连续潜在推理统一在 `main` 维护，�
 分支或单独安装 HTPS。本项目处于 Beta 研究阶段：工程管线已可运行，但尚未证明
 学习策略能够提升实际定理解题能力。
 
+独立目录 [v2](v2/README.md) 新增 RoPE decoder-only 主模型、因果引理编码器、
+已认证定理库、显式草稿纸 Agent、标准下一 token 预训练与 RLVR。
+新版本复用 PA+ 内核；不迁移 v1 检查点。
+
 ## 1. 系统组成
 
 | 层次 | 实现位置 | 职责 |
@@ -20,11 +24,12 @@ PA+、MCTS、HTPS、中间引理和连续潜在推理统一在 `main` 维护，�
 | 模型与训练 | `neural_prover`、`htps_prover.training` | 形式符号词表、策略/价值头、可选中间引理动作与连续潜在计算 |
 | 搜索后端 | `neural_prover`、`htps_prover.hypergraph` | 多目标状态上的 best-first / PUCT-MCTS，或共享 AND/OR 目标节点上的 HTPS |
 | 认证 | 共享环境与证书验证器 | 对源库重放；可选强制外部 Metamath 验证 |
+| V2 证明 Agent | `v2/pa_prover_v2` | 因果语言模型与上下文引理向量；NTP/SFT/RLVR 和可验证草稿纸动作 |
 
 MCTS 和 HTPS 共享数学语义，但并非仅有数值参数不同：搜索结构和回放目标也不同。
 现有 CLI 与数据格式保留为可选工作流。PA+ 目录驱动生成已接入 `build-corpus`，
 现也已贯通 HTPS `generate`、policy/lemma 动作审计与训练。
-**完整 Scale 生成器仍待 PA+ 模板集成**。接线矩阵与命令见
+Scale 生成器也已接入由认证桥支持的 PA+ 模板重放。接线矩阵与命令见
 [训练与评估指南](docs/training-and-evaluation.md)。
 
 ## 2. 形式系统与可信边界
@@ -61,14 +66,14 @@ python -m metamath_generator formal/peano.mm \
 
 ```bash
 python -m pip install -e ".[neural,dev]"
-python -m unittest discover -s tests
+python -m pytest
 ```
 
 本机已有 PyTorch 时，可直接从源码测试，无需重新安装：
 
 ```powershell
-$env:PYTHONPATH='src'
-python -m unittest discover -s tests
+$env:PYTHONPATH='src;v2'
+python -m pytest
 ```
 
 Bash 示例用 `\` 续行，PowerShell 请改为反引号或合并为一行。真实外部验证集成测试

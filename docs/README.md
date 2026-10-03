@@ -22,8 +22,13 @@
 
 ## 搜索、训练与认证
 
+- [V2 运行指南](../v2/README.md)：decoder-only RoPE、引理向量、显式 Agent、NTP/SFT/RLVR。
+- [V2 开发目标与验收](../v2/docs/development-plan.md)：需求、数据算法、预算与验证清单。
+- [引理依赖与循环计算](../v2/docs/lemma-dependencies.md)：首版声明编码和后续有界循环实验。
+
 - [PA+ 数据与训练贯通](pa-plus-htps-training.md)：生成参数、动作审计、HTPS 监督训练、
   旧 checkpoint 微调与本地端到端验收。
+- [PA+ RTX 3090 长时训练](pa-plus-rtx3090-session.md)：百万动作语料、9小时预算、检查点与本地监控。
 - [HTPS 设计](htps-design.md)：forward DAG、AND/OR 超图、受保护引理边与同步回放。
 - [中间引理与连续潜在推理](lemma-and-latent-reasoning.md)：动作语义、模型升级、验收边界。
 - [PA+ 认证与公平评估](pa-plus-certification.md)：确定性动作编码、环境指纹、外部门槛、消融。

@@ -13,6 +13,10 @@ together on `main`. No algorithm-specific branch or separate HTPS installation i
 This is a Beta research system: the pipelines work, but improved theorem-solving ability
 from learning has not yet been established.
 
+The isolated [v2](v2/README.md) adds RoPE decoder-only models, a causal lemma
+encoder, a verified theorem library, explicit scratchpad agents, standard next-token
+pretraining, and RLVR. It keeps the same PA+ kernel and does not migrate v1 checkpoints.
+
 ## 1. What the system contains
 
 | Layer | Implementation | Role |
@@ -22,12 +26,13 @@ from learning has not yet been established.
 | Models and training | `neural_prover`, `htps_prover.training` | Symbolic tokens, policy/value heads, optional lemma actions and continuous latent computation |
 | Search backends | `neural_prover`, `htps_prover.hypergraph` | Best-first / PUCT-MCTS over multi-goal states, or HTPS over shared AND/OR goal nodes |
 | Certification | Shared environment and certificate verifier | Replay against the source library; optional mandatory external Metamath verification |
+| V2 proof agent | `v2/pa_prover_v2` | Causal LM with in-context lemma vectors; NTP/SFT/RLVR and verified scratchpad actions |
 
 MCTS and HTPS share mathematical semantics, but are not just different numeric parameters:
 their search structures and replay targets differ. Existing CLI and dataset formats remain
 separate selectable workflows. PA+ catalog-driven generation is wired into `build-corpus`;
 it is also wired into HTPS `generate`, with policy/lemma action audits and training.
-The **full Scale generator still needs PA+ template integration**. See the
+The Scale generator also replays PA+ templates with certified bridges. See the
 [workflow guide](docs/training-and-evaluation.md) for the integration matrix and commands.
 
 ## 2. Formal scope and trust
@@ -68,14 +73,14 @@ For neural training and the complete Python test suite:
 
 ```bash
 python -m pip install -e ".[neural,dev]"
-python -m unittest discover -s tests
+python -m pytest
 ```
 
 If PyTorch is already installed, no reinstall is needed for source-tree testing:
 
 ```powershell
-$env:PYTHONPATH='src'
-python -m unittest discover -s tests
+$env:PYTHONPATH='src;v2'
+python -m pytest
 ```
 
 Bash examples use `\` for line continuation; in PowerShell use a backtick or a single line.

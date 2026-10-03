@@ -26,6 +26,6 @@ python -m metamath_generator formal/peano.mm \
 
 README.md（英文）与 README-zh.md（中文）应同步修改，保持章节层次、命令和链接
 目的地一致。长命令与实验细节放在 `docs/`，并更新[文档导航](docs/README.md)。
-CI 应覆盖 PA+、HTPS 和认证测试，不能只运行原 MCTS 测试；发布包须包含三个包、
-四个 CLI、双语 README 和 PA+ JSON 目录。旧安装名迁移见
+CI 应覆盖 PA+、HTPS、v2 和认证测试，不能只运行原 MCTS 测试；发布包须包含四个包、
+五个 CLI、双语 README、v2 文档和 PA+ JSON 目录。旧安装名迁移见
 [训练与评估指南](docs/training-and-evaluation.md)。

@@ -90,6 +90,9 @@ jobs:
           assert any(name.endswith("/README-zh.md") for name in names)
           assert "htps_prover/hypergraph.py" in names
           assert "neural_prover/verification.py" in names
+          assert "pa_prover_v2/model.py" in names
+          assert "pa_prover_v2/rlvr.py" in names
+          assert any(name.endswith("/v2/docs/development-plan.md") for name in names)
           PY
       - run: python -m pip install dist/*.whl
       - run: metamath-generate --help
@@ -99,6 +102,7 @@ jobs:
           https://download.pytorch.org/whl/cpu torch==2.5.1+cpu
       - run: peano-htps --help
       - run: pa-plus-compile --help
+      - run: pa-prover-v2 --help
 
   external-verifier:
     runs-on: ubuntu-latest
@@ -144,3 +148,15 @@ jobs:
         env:
           METAMATH_EXECUTABLE: ${{ github.workspace }}/metamath
         run: python -m unittest discover -s tests -p test_pa_plus_training.py -v
+      - name: Cross-verify scoped intermediate lemmas
+        env:
+          METAMATH_EXECUTABLE: ${{ github.workspace }}/metamath
+        run: python -m unittest discover -s tests -p test_lemma_scope.py -v
+      - name: Cross-verify v2 agent and memory training
+        env:
+          METAMATH_EXECUTABLE: ${{ github.workspace }}/metamath
+          OMP_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+        run: |
+          python -m pip install pytest
+          python -m pytest v2/tests -q
