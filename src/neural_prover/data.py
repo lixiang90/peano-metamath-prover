@@ -26,6 +26,7 @@ Difficulty = Literal["easy", "medium", "hard"]
 class CorpusBuildConfig:
     generation_mode: str = "graph"
     graph_instance_probability: float = 0.10
+    graph_partial_premise_probability: float = 0.30
     max_proof_labels: int = 16384
     seeds: tuple[int, ...] = (7, 11, 19, 23)
     steps_per_seed: int = 5_000
@@ -320,6 +321,19 @@ def _graph_examples(generator, tokenizer, config):
             try:
                 canonical = tokenizer.canonical_variables(theorem)
                 state = tuple(tokenizer.state_tokens(theorem, canonical))
+                # A source step can use proof-local dummy variables absent
+                # from its goal, assumptions and DV context. The current
+                # state protocol cannot declare those variables; emitting the
+                # action would create undecodable training supervision.
+                action_variables = {
+                    canonical.encode_symbol(node.op)
+                    for value in theorem.proof.substitution.values()
+                    for node in value.walk()
+                    if node.op in theorem.variable_types
+                }
+                if action_variables - set(state):
+                    generator.rejected["graph_action_only_variables"] += 1
+                    continue
                 action = tuple(tokenizer.action_tokens(theorem, generator.parsed, canonical))
             except ValueError:
                 generator.rejected["graph_encoding"] += 1
@@ -405,6 +419,7 @@ def build_corpus(
             GenerationConfig(
                 seed=seed,
                 graph_instance_probability=cfg.graph_instance_probability,
+                graph_partial_premise_probability=cfg.graph_partial_premise_probability,
                 max_proof_depth=cfg.max_proof_depth,
                 max_ast_depth=cfg.max_ast_depth,
                 max_hypotheses=cfg.max_hypotheses,

@@ -4,7 +4,8 @@ from __future__ import annotations
 import copy
 import tempfile
 from pathlib import Path
-from .model import Proof
+from .model import Hypothesis, Node, Proof, normalized_pair
+from .unification import substitute_simultaneous
 from .verifier import verify
 
 
@@ -13,6 +14,21 @@ def flatten_certificate(theorem, expanded_database, source_database, max_labels=
     if max_labels <= 0:
         raise ValueError("proof label budget must be positive")
     verify(theorem, expanded_database)
+    fresh_floating = []
+    occupied = set(expanded_database.symbols) | set(expanded_database.variables) | set(expanded_database.label_order)
+
+    def fresh_dummy(hypothesis):
+        index = len(fresh_floating)
+        while True:
+            variable = f"__flat_{index}"
+            label = f"{theorem.name}_flat_{index}"
+            if variable not in occupied and label not in occupied:
+                break
+            index += 1
+        occupied.update((variable, label))
+        hyp = Hypothesis(label, Node(hypothesis.expr.op, (Node(variable),)))
+        fresh_floating.append(hyp)
+        return [label]
 
     def expand(labels, replacements, active):
         stack = []
@@ -29,7 +45,19 @@ def flatten_certificate(theorem, expanded_database, source_database, max_labels=
             if label in replacements:
                 push(list(replacements[label]))
                 continue
-            if label in expanded_database.floating_hypotheses or label in expanded_database.essential_hypotheses:
+            if label in expanded_database.floating_hypotheses:
+                # A macro's non-mandatory $f belongs to its own proof scope.
+                # Freshen it for each application instead of leaking the old
+                # label or accidentally identifying it with a caller variable.
+                if len(active) > 1:
+                    replacements[label] = fresh_dummy(expanded_database.floating_hypotheses[label])
+                    push(replacements[label])
+                else:
+                    push([label])
+                continue
+            if label in expanded_database.essential_hypotheses:
+                if len(active) > 1:
+                    raise ValueError("unbound essential hypothesis in generated macro")
                 push([label])
                 continue
             rule = expanded_database.statements[label]
@@ -63,6 +91,7 @@ def flatten_certificate(theorem, expanded_database, source_database, max_labels=
     for h in theorem.floating:
         if h not in result.floating:
             result.floating += (h,)
+    result.floating += tuple(h for h in fresh_floating if h.label in used_labels)
     result.variable_types = {h.expr.args[0].op: h.expr.op for h in result.floating}
     result.proof_variable_types = {}
     result.d_constraints |= result.proof_d_constraints
@@ -70,6 +99,42 @@ def flatten_certificate(theorem, expanded_database, source_database, max_labels=
     result.proof_d_constraints = set()
     result.hypothesis_order = ()
     result.proof = Proof(result.name, source_labels=tuple(labels))
+    # Macro-local dummy variables may require fresh $d conditions. Reconstruct
+    # these from actual source applications; never strengthen the caller's
+    # constraints between its existing variables.
+    fresh_variables = {h.expr.args[0].op for h in fresh_floating}
+    locals_by_label = {h.label: h.expr for h in (*result.floating, *result.hypotheses)}
+    stack = []
+    for label in labels:
+        if label in locals_by_label:
+            stack.append(locals_by_label[label])
+            continue
+        rule = source_database.statements[label]
+        count = len(rule.mandatory_hypotheses)
+        actuals = stack[-count:] if count else []
+        if count:
+            del stack[-count:]
+        bindings = dict(zip((h.label for h in rule.mandatory_hypotheses), actuals))
+        subst = {h.expr.args[0].op: bindings[h.label].args[0] for h in rule.floating}
+        for left, right in rule.d_constraints:
+            a_vars = {n.op for n in subst[left].walk() if n.op in result.variable_types}
+            b_vars = {n.op for n in subst[right].walk() if n.op in result.variable_types}
+            if a_vars & b_vars:
+                raise ValueError("distinct variables collapse in expanded certificate")
+            for a in a_vars:
+                for b in b_vars:
+                    pair = normalized_pair(a, b)
+                    if pair not in result.d_constraints and not ({a, b} & fresh_variables):
+                        raise ValueError("macro expansion requires an unavailable distinct-variable condition")
+                    result.d_constraints.add(pair)
+        stack.append(substitute_simultaneous(rule.conclusion, subst))
+    augmented = copy.copy(source_database)
+    augmented.variables = source_database.variables | set(result.variable_types)
+    augmented.floating_hypotheses = {**source_database.floating_hypotheses,
+                                     **{h.label: h for h in result.floating}}
+    augmented.essential_hypotheses = {**source_database.essential_hypotheses,
+                                      **{h.label: h for h in result.hypotheses}}
+    verify(result, augmented)
     return result
 
 

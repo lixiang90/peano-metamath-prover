@@ -36,6 +36,8 @@ def main(argv=None):
     gen.add_argument("--axiom-instances-per-seed", type=int, default=0)
     gen.add_argument("--generation-mode", choices=("graph", "random"), default="graph")
     gen.add_argument("--instance-probability", type=float, default=0.10)
+    gen.add_argument("--partial-premise-probability", type=float, default=0.30,
+                     help="graph: probability of reserving one premise for multi-premise rules")
     gen.add_argument("--max-depth", type=int, default=10)
     gen.add_argument("--bootstrap-definitions", action="store_true")
     for mode in ("pretrain", "sft"):
@@ -90,6 +92,7 @@ def main(argv=None):
             seeds=tuple(int(s) for s in args.seeds.split(",")), steps_per_seed=args.steps_per_seed,
             max_examples=args.max_examples, library_items=args.library_items, library_bytes=args.library_bytes,
             generation_mode=args.generation_mode, graph_instance_probability=args.instance_probability,
+            graph_partial_premise_probability=args.partial_premise_probability,
             max_depth=args.max_depth,
             bootstrap_definitions=args.bootstrap_definitions,
             axiom_instances_per_seed=args.axiom_instances_per_seed)))

@@ -34,6 +34,7 @@ class ScaleCorpusConfig:
     graph_steps: int = 200
     graph_max_proof_depth: int = 12
     graph_instance_probability: float = 0.10
+    graph_partial_premise_probability: float = 0.30
     max_graph_batches: int = 10000
     train_examples: int = 990_000
     validation_examples: int = 5_000
@@ -446,7 +447,8 @@ def build_scale_corpus(
         key: value
         for key, value in asdict(cfg).items()
         if key not in {"max_new_records", "workers", "generation_mode", "graph_steps",
-                       "graph_max_proof_depth", "graph_instance_probability", "max_graph_batches"}
+                       "graph_max_proof_depth", "graph_instance_probability",
+                       "graph_partial_premise_probability", "max_graph_batches"}
     }
     if manifest_path.exists():
         manifest = json.loads(

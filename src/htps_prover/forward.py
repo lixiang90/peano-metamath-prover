@@ -28,6 +28,7 @@ class ForwardDAGConfig:
     seeds: tuple[int, ...] = (7, 11, 19, 23)
     generation_mode: str = "graph"
     graph_instance_probability: float = 0.10
+    graph_partial_premise_probability: float = 0.30
     steps_per_seed: int = 5_000
     max_proof_depth: int = 12
     max_ast_depth: int = 40

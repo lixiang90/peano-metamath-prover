@@ -101,6 +101,7 @@ def build_graph_scale_corpus(database_path, base_directory, output_directory, cf
         generator = TheoremGenerator(database, GenerationConfig(
             seed=cfg.seed + graph_index, max_proof_depth=cfg.graph_max_proof_depth,
             graph_instance_probability=cfg.graph_instance_probability,
+            graph_partial_premise_probability=cfg.graph_partial_premise_probability,
         ))
         generator.generate("graph", cfg.graph_steps)
         records = list(_graph_examples(generator, tokenizer, data_cfg))

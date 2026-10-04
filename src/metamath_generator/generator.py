@@ -25,6 +25,7 @@ ALPHA_RULES = {"alpha_1", "alpha_2"}
 @dataclass(slots=True)
 class GenerationConfig(_EngineConfig):
     graph_instance_probability: float = 0.10
+    graph_partial_premise_probability: float = 0.30
     graph_expression_depth: int = 2
     graph_match_candidates: int = 24
     graph_rule_bias: float = 0.5

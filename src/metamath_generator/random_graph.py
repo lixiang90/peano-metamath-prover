@@ -10,6 +10,41 @@ from collections import Counter, defaultdict
 
 from .compose import CompositionError, compose, instantiate_assertion
 from .model import Node
+from .unification import substitute_simultaneous
+
+
+def premise_statistics(theorem, rule, store, reserved_premise=None):
+    """Count assumptions after unification, before/after alpha renaming alike.
+
+    An unmatched premise may coincide with a parent's assumption. Count it as
+    new only when its instantiated formula is absent from inherited context.
+    """
+    proof = theorem.proof
+    inherited = set()
+    for index, parent_id in enumerate(proof.premise_map):
+        if parent_id is None:
+            continue
+        parent = store[parent_id]
+        mapping = {v: proof.substitution[f"__p{index}_{v}"] for v in parent.variable_types}
+        inherited.update(substitute_simultaneous(h.expr, mapping) for h in parent.hypotheses)
+    new = {h.expr for h in theorem.hypotheses} - inherited
+    unmatched = proof.premise_map.count(None)
+    reserved_new = False
+    if reserved_premise is not None:
+        mapping = {v: proof.substitution[f"__rule_{v}"] for v in rule.variable_types}
+        reserved_new = substitute_simultaneous(
+            rule.hypotheses[reserved_premise].expr, mapping) in new
+    return {
+        "graph_partial_plan_admitted": int(reserved_premise is not None),
+        "graph_nodes_with_open_premises": int(unmatched > 0),
+        "graph_nodes_with_new_hypotheses": int(bool(new)),
+        "graph_nodes_with_inherited_hypotheses": int(bool(inherited)),
+        "graph_nodes_with_reserved_new_hypothesis": int(reserved_new),
+        "graph_new_hypotheses": len(new),
+        "graph_inherited_hypotheses": len(inherited),
+        "graph_unmatched_premises": unmatched,
+        "graph_unmatched_after_search": unmatched - int(reserved_premise is not None),
+    }
 
 
 class RandomProofGraph:
@@ -19,6 +54,7 @@ class RandomProofGraph:
         self.cfg = generator.config
         self.rule_attempts = Counter()
         self.parent_uses = Counter()
+        self.composition_statistics = {}
         self.closed = [r for r in generator.parsed.logical_assertions.values()
                        if not r.hypotheses]
         self.rules = list(generator.rules)
@@ -95,6 +131,7 @@ class RandomProofGraph:
         return result
 
     def combine(self):
+        self.composition_statistics = {}
         derived = [n for n in self.g.store.generated() if n.hypotheses
                    and n.proof_depth < self.cfg.max_proof_depth]
         rules = (derived if derived and self.rng.random() < self.cfg.graph_derived_rule_probability
@@ -107,6 +144,17 @@ class RandomProofGraph:
         # premise before minor premise for modus ponens), for any source rule.
         indices = sorted(range(len(matches)), key=lambda i: -sum(
             n.op not in rule.variable_types for n in rule.hypotheses[i].expr.walk()))
+        reserved = None
+        if len(indices) >= 2:
+            self.g.stats["graph_multi_premise_plans"] += 1
+            if self.rng.random() < self.cfg.graph_partial_premise_probability:
+                # Reserve exactly one uniformly chosen premise even if an old
+                # node could prove it. Keep at least one slot for composition.
+                reserved = self.rng.choice(indices)
+                indices.remove(reserved)
+                self.g.stats["graph_partial_plans"] += 1
+        else:
+            self.g.stats["graph_single_premise_plans"] += 1
         best = None
         for index in indices:
             for parent in self.candidates(rule.hypotheses[index].expr, rule):
@@ -122,6 +170,8 @@ class RandomProofGraph:
                 matches, best = proposed, theorem
                 break
         # Unmatched premises remain explicit hypotheses, never new axioms.
+        if best is not None:
+            self.composition_statistics = premise_statistics(best, rule, self.g.store, reserved)
         return best
 
     def admit(self, theorem, kind):
@@ -157,7 +207,9 @@ class RandomProofGraph:
             try:
                 theorem = self.instantiate() if instance else self.combine()
                 if theorem is not None:
-                    self.admit(theorem, "random_instance" if instance else "random_graph")
+                    added = self.admit(theorem, "random_instance" if instance else "random_graph")
+                    if added and not instance:
+                        self.g.stats.update(self.composition_statistics)
                 else:
                     self.g.rejected["graph_no_match"] += 1
             except (CompositionError, ParseError):
@@ -172,6 +224,8 @@ def generate_random_graph(generator, steps):
     cfg = generator.config
     if not 0 <= cfg.graph_instance_probability <= 1:
         raise ValueError("graph_instance_probability must be in [0, 1]")
+    if not 0 <= cfg.graph_partial_premise_probability <= 1:
+        raise ValueError("graph_partial_premise_probability must be in [0, 1]")
     if not 0 <= cfg.graph_derived_rule_probability <= 1:
         raise ValueError("graph_derived_rule_probability must be in [0, 1]")
     if cfg.graph_expression_depth < 0 or cfg.graph_match_candidates <= 0:

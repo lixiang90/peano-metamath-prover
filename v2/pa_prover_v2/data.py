@@ -36,12 +36,15 @@ class DataConfig:
     axiom_instances_per_seed: int = 0
     generation_mode: str = "graph"
     graph_instance_probability: float = 0.10
+    graph_partial_premise_probability: float = 0.30
 
     def validate(self):
         if self.generation_mode not in {"graph", "random"}:
             raise ValueError("generation_mode must be graph or random")
         if not 0 <= self.graph_instance_probability <= 1:
             raise ValueError("graph_instance_probability must be in [0, 1]")
+        if not 0 <= self.graph_partial_premise_probability <= 1:
+            raise ValueError("graph_partial_premise_probability must be in [0, 1]")
         if not self.seeds or min(self.steps_per_seed, self.max_examples, self.max_proof_labels, self.max_depth) <= 0:
             raise ValueError("positive generation budgets and seeds required")
         if min(self.validation_fraction, self.test_fraction) < 0 or self.validation_fraction + self.test_fraction >= 1:
@@ -171,6 +174,7 @@ def generate_corpus(database_path, output_directory, config=None):
         generator = TheoremGenerator(kernel.database, GenerationConfig(
             seed=seed, max_proof_depth=cfg.max_depth, depth_parent_bias=0.8,
             graph_instance_probability=cfg.graph_instance_probability,
+            graph_partial_premise_probability=cfg.graph_partial_premise_probability,
             max_ast_depth=24, max_hypotheses=6, max_variables=12,
             bootstrap_definitions=cfg.bootstrap_definitions,
             definition_coverage_weight=1.0 if cfg.bootstrap_definitions else 0.0,

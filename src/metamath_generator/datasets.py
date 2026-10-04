@@ -91,6 +91,10 @@ def export_datasets(
                 "dominated": summary.dominated,
                 "categories": summary.categories,
                 "rejected": summary.rejected,
+                "graph_statistics": {
+                    k: v for k, v in generator.stats.items()
+                    if k.startswith("graph_") or k in {"random_graph", "random_instance"}
+                },
                 "rule_usage": summary.rule_usage,
                 "definition_coverage": {
                     "total": summary.definition_predicates_total,
@@ -107,6 +111,8 @@ def export_datasets(
                     "best_similarity": summary.target_best_similarity,
                 },
                 "configuration": {
+                    "graph_instance_probability": generator.config.graph_instance_probability,
+                    "graph_partial_premise_probability": generator.config.graph_partial_premise_probability,
                     "full_discharge_probability":
                         generator.config.full_discharge_probability,
                     "closed_parent_probability":
