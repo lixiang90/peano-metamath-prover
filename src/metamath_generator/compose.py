@@ -241,6 +241,12 @@ def compose(
         parent.id for parent in selected
         if parent is not None and parent.id is not None
     ]
+    # A generated rule is itself a proof dependency, even when it is not
+    # used as a premise. Export it before its consumers and count its depth.
+    if rule.kind == "generated" and rule.proof is not None:
+        if rule.id is None:
+            raise CompositionError("generated rule must belong to the theorem store")
+        parent_ids = list(dict.fromkeys([rule.id, *parent_ids]))
     parent_depth = max(
         (parent.proof_depth for parent in selected if parent is not None),
         default=0,
@@ -273,14 +279,14 @@ def compose(
             parents=parent_ids,
             substitution=total_substitution,
             premise_map=premise_map,
-            depth=parent_depth + 1,
+            depth=max(parent_depth, rule.proof_depth if rule.kind == "generated" else 0) + 1,
         ),
         variable_types={
-            variable: variable_types[variable] for variable in used_variables
+            variable: variable_types[variable] for variable in sorted(used_variables)
         },
         proof_variable_types={
             variable: variable_types[variable]
-            for variable in proof_used_variables
+            for variable in sorted(proof_used_variables)
         },
         proof_d_constraints=proof_constraints,
         kind="generated",
@@ -394,11 +400,11 @@ def instantiate_assertion(
         ),
         variable_types={
             variable: available_types[variable]
-            for variable in used_variables
+            for variable in sorted(used_variables)
         },
         proof_variable_types={
             variable: available_types[variable]
-            for variable in proof_used_variables
+            for variable in sorted(proof_used_variables)
         },
         proof_d_constraints=proof_constraints,
         kind="generated",

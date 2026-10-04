@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Iterable, Literal
 
@@ -24,6 +24,9 @@ Difficulty = Literal["easy", "medium", "hard"]
 
 @dataclass(frozen=True, slots=True)
 class CorpusBuildConfig:
+    generation_mode: str = "graph"
+    graph_instance_probability: float = 0.10
+    max_proof_labels: int = 16384
     seeds: tuple[int, ...] = (7, 11, 19, 23)
     steps_per_seed: int = 5_000
     max_proof_depth: int = 7
@@ -162,6 +165,9 @@ def _examples_from_generator(
     tokenizer: MetamathTokenizer,
     config: CorpusBuildConfig,
 ) -> Iterable[ProverExample]:
+    if config.generation_mode == "graph":
+        yield from _graph_examples(generator, tokenizer, config)
+        return
     rule_lookup = {
         theorem.name: theorem for theorem in generator.store
     }
@@ -288,6 +294,62 @@ def _write_jsonl(path: Path, examples: Iterable[ProverExample]) -> int:
     return count
 
 
+def _graph_examples(generator, tokenizer, config):
+    from metamath_generator.certificates import replay_graph, flatten_certificate, certificate_steps
+    from metamath_generator.parser import MetamathParser
+    from .environment import BackwardEnvironment, ProofState, parse_tactic_tokens
+
+    parser = MetamathParser()
+    source = " ".join(parser._tokens_with_includes(Path(generator.parsed.source_path).resolve(), set()))
+    expanded = replay_graph(generator.store, source)
+    environment = BackwardEnvironment(generator.parsed)
+    environment.configure_from_tokenizer(tokenizer)
+    seen = set()
+    for root in generator.store.generated():
+        if not config.include_inference_rules and root.hypotheses:
+            continue
+        try:
+            cert = flatten_certificate(expanded.proved_theorems[root.name], expanded,
+                                       generator.parsed, config.max_proof_labels)
+        except ValueError as exc:
+            if "proof label budget exceeded" not in str(exc):
+                raise
+            generator.rejected["graph_certificate_budget"] += 1
+            continue
+        for theorem in certificate_steps(cert, generator.parsed):
+            try:
+                canonical = tokenizer.canonical_variables(theorem)
+                state = tuple(tokenizer.state_tokens(theorem, canonical))
+                action = tuple(tokenizer.action_tokens(theorem, generator.parsed, canonical))
+            except ValueError:
+                generator.rejected["graph_encoding"] += 1
+                continue
+            if len(state) > config.max_state_tokens or len(action) > config.max_action_tokens:
+                generator.rejected["graph_token_budget"] += 1
+                continue
+            key = (state, action)
+            if key in seen:
+                continue
+            # Audit what will actually be trained, after serialization.
+            decoded = tokenizer.theorem_from_state_tokens(state, generator.parsed)
+            tactic = parse_tactic_tokens(action, decoded, tokenizer, generator.parsed,
+                                         environment=environment)
+            environment.apply(ProofState.from_theorem(decoded), tactic)
+            seen.add(key)
+            yield ProverExample(
+                example_id=hashlib.sha256(repr(key).encode()).hexdigest()[:20],
+                split=_split_for(theorem, config.validation_fraction, config.test_fraction),
+                origin="synthetic", difficulty=_difficulty(theorem), theorem_name=theorem.name,
+                conclusion=theorem.conclusion.to_prefix(),
+                hypotheses=tuple(h.expr.to_prefix() for h in theorem.hypotheses),
+                rule=theorem.proof.rule, proof_depth=theorem.proof_depth, quality_score=0.0,
+                value_target=1.0, state_tokens=state, action_tokens=action,
+                state_ids=tuple(tokenizer.encode(state)), action_ids=tuple(tokenizer.encode(action)),
+                generation_kind=generator.generation_context.get(root.id, "random_graph"),
+                definition_support=tuple(sorted(generator.definition_support.get(root.id, ()))),
+            )
+
+
 def build_corpus(
     database_path: str | Path,
     output_directory: str | Path,
@@ -296,6 +358,8 @@ def build_corpus(
     """Generate, deduplicate, split, and serialize proof-policy data."""
 
     cfg = config or CorpusBuildConfig()
+    if cfg.generation_mode not in {"graph", "random"}:
+        raise ValueError("generation_mode must be graph or random")
     if cfg.validation_fraction + cfg.test_fraction >= 1:
         raise ValueError("validation and test fractions must sum to < 1")
     database = parse(database_path)
@@ -332,12 +396,15 @@ def build_corpus(
         elif tokenizer.pa_plus_context.enabled:
             raise ValueError("PA+ base tokenizer requires an explicit matching definition catalog")
     best: dict[str, ProverExample] = {}
+    output = Path(output_directory)
+    output.mkdir(parents=True, exist_ok=True)
     run_summaries: list[dict] = []
     for seed in cfg.seeds:
         generator = TheoremGenerator(
             database,
             GenerationConfig(
                 seed=seed,
+                graph_instance_probability=cfg.graph_instance_probability,
                 max_proof_depth=cfg.max_proof_depth,
                 max_ast_depth=cfg.max_ast_depth,
                 max_hypotheses=cfg.max_hypotheses,
@@ -363,7 +430,18 @@ def build_corpus(
                 ),
             ),
         )
-        generator.generate("random", cfg.steps_per_seed)
+        generator.generate(cfg.generation_mode, cfg.steps_per_seed)
+        if cfg.generation_mode == "graph":
+            from metamath_generator.export import export_metamath
+            from metamath_generator.parser import MetamathParser
+            roots = list(generator.store.generated())
+            if roots:
+                graph_dir = output / "proof-graphs"
+                graph_dir.mkdir(exist_ok=True)
+                graph_path = graph_dir / f"seed-{len(run_summaries)}-{seed}.mm"
+                export_metamath(roots[0], generator.store, graph_path, additional_roots=roots[1:])
+                source_text = " ".join(MetamathParser()._tokens_with_includes(Path(database_path).resolve(), set()))
+                graph_path.write_text(source_text + "\n" + graph_path.read_text(encoding="utf-8"), encoding="utf-8")
         summary = generator.summary()
         generated = [
             theorem
@@ -376,6 +454,7 @@ def build_corpus(
             depth_histogram[depth] = depth_histogram.get(depth, 0) + 1
         run_summaries.append({
             "seed": seed,
+            "graph_statistics": dict(generator.stats),
             "stored": summary.stored,
             "active": summary.active,
             "categories": summary.categories,
@@ -411,7 +490,13 @@ def build_corpus(
                 -old.quality_score,
             ):
                 best[example.example_id] = example
+        run_summaries[-1]["rejected"] = dict(generator.rejected)
     if cfg.include_source_actions:
+        source_families = {_conclusion_bytes(t) for t in database.logical_assertions.values()}
+        for key, example in list(best.items()):
+            theorem = tokenizer.theorem_from_state_tokens(example.state_tokens, database)
+            if _conclusion_bytes(theorem) in source_families:
+                best[key] = replace(example, split="train")
         for example in _source_examples(database, tokenizer, cfg):
             best[example.example_id] = example
 
@@ -444,6 +529,10 @@ def build_corpus(
 
     manifest = {
         "format": "peano-neural-corpus-v2",
+        "generation_algorithm": cfg.generation_mode,
+        "proof_depth_kind": "expanded source logical steps" if cfg.generation_mode == "graph" else "stored dependency DAG",
+        "supervision": ("all instantiated source-rule steps from verified proof graphs"
+                        if cfg.generation_mode == "graph" else "legacy root actions"),
         "database": str(Path(database_path).resolve()),
         "configuration": {
             **asdict(cfg),

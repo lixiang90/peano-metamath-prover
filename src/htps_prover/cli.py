@@ -63,6 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("database")
     generate.add_argument("output")
     generate.add_argument("--steps", type=int, default=5000)
+    generate.add_argument("--generation-mode", choices=("graph", "random"), default="graph")
+    generate.add_argument("--instance-probability", type=float, default=0.10)
     generate.add_argument("--seeds", default="7,11,19,23")
     generate.add_argument("--max-proof-depth", type=int, default=12)
     generate.add_argument("--max-ast-depth", type=int, default=40)
@@ -178,6 +180,8 @@ def main(argv: list[str] | None = None) -> None:
             args.database,
             args.output,
             ForwardDAGConfig(
+                generation_mode=args.generation_mode,
+                graph_instance_probability=args.instance_probability,
                 seeds=seeds,
                 steps_per_seed=args.steps,
                 max_proof_depth=args.max_proof_depth,

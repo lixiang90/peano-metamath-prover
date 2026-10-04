@@ -300,6 +300,7 @@ class PaPlusDefinitionTests(unittest.TestCase):
                 EXTENSION,
                 output,
                 CorpusBuildConfig(
+                    generation_mode="random",
                     seeds=(7,),
                     steps_per_seed=0,
                     definition_catalog=str(CATALOG),

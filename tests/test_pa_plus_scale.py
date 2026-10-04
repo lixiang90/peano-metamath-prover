@@ -11,12 +11,14 @@ def test_pa_plus_scale_templates_replay_with_certified_bridges(tmp_path, workers
     database = ROOT/'formal/peano-pa-plus.mm'
     base = tmp_path/'base'
     build_corpus(database, base, CorpusBuildConfig(
+        generation_mode="random",
         seeds=(7,), steps_per_seed=20, definition_catalog=str(ROOT/'formal/pa-plus-definitions.json'),
         bootstrap_definitions=True, bounded_nat_max=2, ground_instances_per_predicate=1,
         max_state_tokens=2304, max_action_tokens=2304,
     ))
     output = tmp_path/'scale'
     build_scale_corpus(database,base,output,ScaleCorpusConfig(
+        generation_mode="templates",
         train_examples=80,validation_examples=16,test_examples=16,shard_size=16,
         workers=workers,kernel_validation_interval=1,
     ))

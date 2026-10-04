@@ -278,6 +278,8 @@ def export_metamath(
     theorem: Theorem,
     store: TheoremDatabase,
     destination: str | Path,
+    *,
+    additional_roots=(),
 ) -> None:
     """Write valid uncompressed Metamath declarations for a generated DAG.
 
@@ -303,6 +305,10 @@ def export_metamath(
             order.append(item)
 
     visit(theorem.id)
+    for root in additional_roots:
+        if root.id is None:
+            raise ValueError("all roots must belong to the theorem database")
+        visit(root.id)
     variables = sorted({
         variable
         for item in order

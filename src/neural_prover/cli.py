@@ -36,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     corpus.add_argument("output")
     corpus.add_argument("--seeds", default="7,11,19,23")
     corpus.add_argument("--steps-per-seed", type=int, default=5_000)
+    corpus.add_argument("--generation-mode", choices=("graph", "random"), default="graph")
+    corpus.add_argument("--instance-probability", type=float, default=0.10)
     corpus.add_argument("--max-proof-depth", type=int, default=7)
     corpus.add_argument("--max-ast-depth", type=int, default=32)
     corpus.add_argument("--max-hypotheses", type=int, default=8)
@@ -302,6 +304,11 @@ def build_parser() -> argparse.ArgumentParser:
     scale_corpus.add_argument("database")
     scale_corpus.add_argument("base_corpus")
     scale_corpus.add_argument("output")
+    scale_corpus.add_argument("--generation-mode", choices=("graph", "templates"), default="graph")
+    scale_corpus.add_argument("--graph-steps", type=int, default=200)
+    scale_corpus.add_argument("--max-proof-depth", type=int, default=12)
+    scale_corpus.add_argument("--instance-probability", type=float, default=0.10)
+    scale_corpus.add_argument("--max-graph-batches", type=int, default=10000)
     scale_corpus.add_argument("--train-examples", type=int, default=990_000)
     scale_corpus.add_argument(
         "--validation-examples", type=int, default=5_000
@@ -394,6 +401,8 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             CorpusBuildConfig(
                 seeds=_seeds(args.seeds),
+                generation_mode=args.generation_mode,
+                graph_instance_probability=args.instance_probability,
                 steps_per_seed=args.steps_per_seed,
                 max_proof_depth=args.max_proof_depth,
                 max_ast_depth=args.max_ast_depth,
@@ -694,6 +703,11 @@ def main(argv: list[str] | None = None) -> int:
             args.base_corpus,
             args.output,
             ScaleCorpusConfig(
+                generation_mode=args.generation_mode,
+                graph_steps=args.graph_steps,
+                graph_max_proof_depth=args.max_proof_depth,
+                graph_instance_probability=args.instance_probability,
+                max_graph_batches=args.max_graph_batches,
                 train_examples=args.train_examples,
                 validation_examples=args.validation_examples,
                 test_examples=args.test_examples,

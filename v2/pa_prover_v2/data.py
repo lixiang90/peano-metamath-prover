@@ -1,22 +1,19 @@
 """Rule-generated PA+ certificates and fully replayed agent supervision."""
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import os
 import random
-import tempfile
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from metamath_generator.export import export_metamath
+from metamath_generator.certificates import flatten_certificate, replay_graph, certificate_steps
 from metamath_generator.generator import GenerationConfig, TheoremGenerator
-from metamath_generator.model import Node, Proof, Theorem
+from metamath_generator.model import Node, Theorem
 from metamath_generator.parser import MetamathParser
 from metamath_generator.unification import substitute_simultaneous
-from metamath_generator.verifier import verify
 
 from .kernel import ProofKernel, statement_fingerprint, theorem_from_data, theorem_to_data
 from .library import TheoremLibrary
@@ -35,10 +32,16 @@ class DataConfig:
     test_fraction: float = 0.15
     library_items: int = 32
     library_bytes: int = 2_000_000
-    bootstrap_definitions: bool = True
-    axiom_instances_per_seed: int = 8
+    bootstrap_definitions: bool = False
+    axiom_instances_per_seed: int = 0
+    generation_mode: str = "graph"
+    graph_instance_probability: float = 0.10
 
     def validate(self):
+        if self.generation_mode not in {"graph", "random"}:
+            raise ValueError("generation_mode must be graph or random")
+        if not 0 <= self.graph_instance_probability <= 1:
+            raise ValueError("graph_instance_probability must be in [0, 1]")
         if not self.seeds or min(self.steps_per_seed, self.max_examples, self.max_proof_labels, self.max_depth) <= 0:
             raise ValueError("positive generation budgets and seeds required")
         if min(self.validation_fraction, self.test_fraction) < 0 or self.validation_fraction + self.test_fraction >= 1:
@@ -81,70 +84,6 @@ def _random_axiom_instances(kernel, seed, cfg):
         # compose checks every syntax proof, source identity, $d and the result.
         yield kernel.compose(rule, mapping, [], target)
 
-
-def flatten_certificate(theorem, expanded_database, source_database, max_labels=4096):
-    """Expand generated $p macros into original assertions, never into new axioms."""
-    if max_labels <= 0:
-        raise ValueError("proof label budget must be positive")
-    verify(theorem, expanded_database)
-
-    def expand(labels, replacements, active):
-        stack = []
-        stack_labels = 0
-
-        def push(fragment):
-            nonlocal stack_labels
-            if stack_labels + len(fragment) > max_labels:
-                raise ValueError("proof label budget exceeded")
-            stack.append(fragment)
-            stack_labels += len(fragment)
-
-        for label in labels:
-            if label in replacements:
-                push(list(replacements[label]))
-                continue
-            if label in expanded_database.floating_hypotheses or label in expanded_database.essential_hypotheses:
-                push([label])
-                continue
-            rule = expanded_database.statements[label]
-            count = len(rule.mandatory_hypotheses)
-            if len(stack) < count:
-                raise ValueError("malformed macro proof stack")
-            actuals = stack[-count:] if count else []
-            if count:
-                del stack[-count:]
-                stack_labels -= sum(map(len, actuals))
-            if label in source_database.statements:
-                fragment = [token for item in actuals for token in item] + [label]
-            else:
-                if label in active or rule.proof is None:
-                    raise ValueError("cyclic or unproved generated dependency")
-                bindings = {h.label: item for h, item in zip(rule.mandatory_hypotheses, actuals)}
-                fragment = expand(rule.proof.source_labels, bindings, active | {label})
-            push(fragment)
-        if len(stack) != 1:
-            raise ValueError("macro proof did not leave one result")
-        return stack[0]
-
-    labels = expand(theorem.proof.source_labels, {}, {theorem.name})
-    result = copy.deepcopy(theorem)
-    result.declaration_index = -1
-    result.active_hypothesis_labels = frozenset()
-    # Proof-only variables must be available to replay the explicit certificate.
-    used_labels = set(labels)
-    result.floating = tuple(h for label, h in expanded_database.floating_hypotheses.items()
-                            if label in used_labels and label in theorem.active_hypothesis_labels)
-    for h in theorem.floating:
-        if h not in result.floating:
-            result.floating += (h,)
-    result.variable_types = {h.expr.args[0].op: h.expr.op for h in result.floating}
-    result.proof_variable_types = {}
-    result.d_constraints |= result.proof_d_constraints
-    result.d_constraints = {pair for pair in result.d_constraints if set(pair) <= set(result.variable_types)}
-    result.proof_d_constraints = set()
-    result.hypothesis_order = ()
-    result.proof = Proof(result.name, source_labels=tuple(labels))
-    return result
 
 
 def _assign_splits(records, cfg):
@@ -191,6 +130,7 @@ def generate_corpus(database_path, output_directory, config=None):
     records, seen, filtered = [], set(), Counter()
     seed_counts = {str(seed): 0 for seed in cfg.seeds}
     used_seeds = []
+    graph_runs = []
 
     def append_certificate(cert, seed, kind, proof_depth):
         if len(cert.proof.source_labels) > cfg.max_proof_labels:
@@ -205,7 +145,8 @@ def generate_corpus(database_path, output_directory, config=None):
         records.append({"id": f"g{seed}_{len(records)}", "seed": seed,
                         "statement_sha256": statement, "skeleton_sha256": _digest(skeleton),
                         "certificate": theorem_to_data(cert), "proof_depth": proof_depth,
-                        "generation_kind": kind})
+                        "generation_kind": kind,
+                        "expanded_proof_depth": max((s.proof_depth for s in certificate_steps(cert, kernel.database)), default=0)})
         seen.add(statement)
         seed_counts[str(seed)] += 1
         return True
@@ -229,24 +170,26 @@ def generate_corpus(database_path, output_directory, config=None):
             continue
         generator = TheoremGenerator(kernel.database, GenerationConfig(
             seed=seed, max_proof_depth=cfg.max_depth, depth_parent_bias=0.8,
+            graph_instance_probability=cfg.graph_instance_probability,
             max_ast_depth=24, max_hypotheses=6, max_variables=12,
             bootstrap_definitions=cfg.bootstrap_definitions,
             definition_coverage_weight=1.0 if cfg.bootstrap_definitions else 0.0,
         ))
-        generator.generate("random", cfg.steps_per_seed)
+        generator.generate(cfg.generation_mode, cfg.steps_per_seed)
+        graph_runs.append({"seed": seed, "statistics": dict(generator.stats),
+                           "rejected": dict(generator.rejected),
+                           "depth_histogram": dict(Counter(t.proof_depth for t in generator.store.generated()))})
         # Interleave shallow and deeper proofs; do not fill the corpus only with bridges.
         generated = sorted(generator.store.generated(), key=lambda t: (t.proof_depth, t.name))
         random.Random(seed).shuffle(generated)
+        expanded = replay_graph(generator.store, source)
         for theorem in generated:
             if len(records) >= seed_limit:
                 break
             try:
-                with tempfile.TemporaryDirectory() as temp:
-                    fragment = Path(temp) / "generated.mm"
-                    export_metamath(theorem, generator.store, fragment)
-                    expanded = MetamathParser().parse_text(source + "\n" + fragment.read_text(encoding="utf-8"))
                 cert = flatten_certificate(expanded.proved_theorems[theorem.name], expanded, kernel.database, cfg.max_proof_labels)
-                append_certificate(cert, seed, "composed_proof_dag", theorem.proof_depth)
+                kind = generator.generation_context.get(theorem.id, "composed_proof_dag")
+                append_certificate(cert, seed, kind, theorem.proof_depth)
             except (ValueError, KeyError, RecursionError) as exc:
                 filtered[type(exc).__name__ + ":" + str(exc)[:100]] += 1
     if not records:
@@ -304,8 +247,10 @@ def generate_corpus(database_path, output_directory, config=None):
                 "theory_sha256": kernel.theory_fingerprint, "config": asdict(cfg),
                 "counts": {split: sum(r["split"] == split for r in episodes) for split in ("train", "validation", "test")},
                 "filtered": dict(filtered), "augmentation": dict(augmentation),
-                "generation_kind": {kind: sum(r["generation_kind"] == kind for r in episodes)
-                                    for kind in ("random_axiom_instance", "composed_proof_dag")},
+                "generation_kind": dict(Counter(r["generation_kind"] for r in episodes)),
+                "generation_algorithm": cfg.generation_mode, "graph_runs": graph_runs,
+                "proof_depth_kind": "stored dependency DAG; expanded_proof_depth counts source logical steps",
+                "proof_depth_histogram": dict(Counter(r["proof_depth"] for r in episodes)),
                 "seed_certificate_counts": seed_counts, "used_seeds": used_seeds,
                 "action_coverage": dict(action_coverage), "library_count": len(library.record_ids),
                 "library_reuse_score": "logical_rule_frequency_proxy_not_measured_theorem_reuse",

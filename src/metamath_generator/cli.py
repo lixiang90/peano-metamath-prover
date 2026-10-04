@@ -20,10 +20,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("database", help="input .mm file")
     parser.add_argument(
         "--mode",
-        choices=["random", "forward"],
-        default="random",
+        choices=["graph", "random", "forward"],
+        default="graph",
     )
     parser.add_argument("--steps", type=int, default=5_000)
+    parser.add_argument("--instance-probability", type=float, default=0.10)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--max-depth", type=int, default=32)
     parser.add_argument("--max-proof-depth", type=int, default=8)
@@ -156,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
             max_variables=args.max_variables,
             max_proof_depth=args.max_proof_depth,
             seed=args.seed,
+            graph_instance_probability=args.instance_probability,
             full_discharge_probability=
                 args.full_discharge_probability,
             closed_parent_probability=args.closed_parent_probability,

@@ -29,7 +29,9 @@ PA+、MCTS、HTPS、中间引理和连续潜在推理统一在 `main` 维护，�
 MCTS 和 HTPS 共享数学语义，但并非仅有数值参数不同：搜索结构和回放目标也不同。
 现有 CLI 与数据格式保留为可选工作流。PA+ 目录驱动生成已接入 `build-corpus`，
 现也已贯通 HTPS `generate`、policy/lemma 动作审计与训练。
-Scale 生成器也已接入由认证桥支持的 PA+ 模板重放。接线矩阵与命令见
+数据生成默认使用随机证明图：自动合一组合已有规则/定理，10% 的尝试做辅助实例化；
+v1、HTPS、Scale 和 v2 共享此算法。Scale 每批构造新图，旧模板重放需显式选择。
+算法与命令见 [随机证明图生成](docs/random-proof-graphs.md)。接线矩阵与命令见
 [训练与评估指南](docs/training-and-evaluation.md)。
 
 ## 2. 形式系统与可信边界

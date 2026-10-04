@@ -24,6 +24,12 @@ ALPHA_RULES = {"alpha_1", "alpha_2"}
 
 @dataclass(slots=True)
 class GenerationConfig(_EngineConfig):
+    graph_instance_probability: float = 0.10
+    graph_expression_depth: int = 2
+    graph_match_candidates: int = 24
+    graph_rule_bias: float = 0.5
+    graph_depth_bias: float = 0.5
+    graph_derived_rule_probability: float = 0.25
     quality: QualityConfig = field(default_factory=QualityConfig)
     full_discharge_probability: float = 0.72
     closed_parent_probability: float = 0.78
@@ -903,7 +909,7 @@ class TheoremGenerator(_CompositionEngine):
 
     def generate(
         self,
-        mode: Literal["random", "forward"] = "random",
+        mode: Literal["graph", "random", "forward"] = "graph",
         steps: int = 100,
     ) -> list[Theorem]:
         start_index = len(self._new_ids)
@@ -914,7 +920,10 @@ class TheoremGenerator(_CompositionEngine):
             self.bootstrap_definition_directions()
         if self.config.ground_instances_per_predicate > 0:
             self.bootstrap_bounded_term_instances()
-        if mode == "forward":
+        if mode == "graph":
+            from .random_graph import generate_random_graph
+            generate_random_graph(self, steps)
+        elif mode == "forward":
             self.forward_saturation(steps)
         elif mode == "random":
             self.random_walk(steps)

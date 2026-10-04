@@ -30,6 +30,11 @@ from .tokenizer import MetamathTokenizer
 
 @dataclass(frozen=True, slots=True)
 class ScaleCorpusConfig:
+    generation_mode: str = "graph"
+    graph_steps: int = 200
+    graph_max_proof_depth: int = 12
+    graph_instance_probability: float = 0.10
+    max_graph_batches: int = 10000
     train_examples: int = 990_000
     validation_examples: int = 5_000
     test_examples: int = 5_000
@@ -422,6 +427,11 @@ def build_scale_corpus(
     """Build or resume a compact million-record, sharded corpus."""
 
     cfg = config or ScaleCorpusConfig()
+    if cfg.generation_mode == "graph":
+        from .graph_scale import build_graph_scale_corpus
+        return build_graph_scale_corpus(database_path, base_corpus_directory, output_directory, cfg)
+    if cfg.generation_mode != "templates":
+        raise ValueError("generation_mode must be graph or templates")
     if cfg.shard_size <= 0:
         raise ValueError("shard_size must be positive")
     output = Path(output_directory)
@@ -435,7 +445,8 @@ def build_scale_corpus(
     stable_config = {
         key: value
         for key, value in asdict(cfg).items()
-        if key not in {"max_new_records", "workers"}
+        if key not in {"max_new_records", "workers", "generation_mode", "graph_steps",
+                       "graph_max_proof_depth", "graph_instance_probability", "max_graph_batches"}
     }
     if manifest_path.exists():
         manifest = json.loads(
@@ -450,6 +461,7 @@ def build_scale_corpus(
     else:
         manifest = {
             "format": "peano-scale-corpus-v3",
+            "generation_algorithm": "templates",
             "database": str(Path(database_path).resolve()),
             "base_corpus": str(
                 Path(base_corpus_directory).resolve()

@@ -26,6 +26,8 @@ class ForwardDAGConfig:
     """Configuration for certified forward proof-DAG generation."""
 
     seeds: tuple[int, ...] = (7, 11, 19, 23)
+    generation_mode: str = "graph"
+    graph_instance_probability: float = 0.10
     steps_per_seed: int = 5_000
     max_proof_depth: int = 12
     max_ast_depth: int = 40
@@ -201,6 +203,11 @@ def build_forward_dag_dataset(
 
     cfg = config or ForwardDAGConfig()
     cfg.validate()
+    if cfg.generation_mode == "graph":
+        from .graph_data import build_graph_dataset
+        return build_graph_dataset(database_path, output_directory, cfg, base_tokenizer_path)
+    if cfg.generation_mode != "random":
+        raise ValueError("generation_mode must be graph or random")
     source = Path(database_path)
     database = parse(source)
     catalog = load_definition_catalog(cfg.definition_catalog) if cfg.definition_catalog else None

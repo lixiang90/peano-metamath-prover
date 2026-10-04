@@ -33,6 +33,7 @@ class PAPlusForwardTests(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory()
         cls.root = Path(cls.temporary.name)
         cls.config = ForwardDAGConfig(
+            generation_mode="random",
             seeds=(7, 11), steps_per_seed=8, max_proof_depth=8, max_ast_depth=64,
             max_variables=24, max_state_tokens=1024, max_action_tokens=512,
             definition_catalog=str(CATALOG), bootstrap_definitions=True,

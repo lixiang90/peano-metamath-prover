@@ -108,6 +108,7 @@ class CertificationTests(unittest.TestCase):
             directory = Path(raw)
             corpus = directory / "corpus"
             build_corpus(PA_PLUS, corpus, CorpusBuildConfig(
+                generation_mode="random",
                 seeds=(7,), steps_per_seed=0,
                 definition_catalog=str(CATALOG), bootstrap_definitions=True,
                 bounded_nat_max=2, ground_instances_per_predicate=1,

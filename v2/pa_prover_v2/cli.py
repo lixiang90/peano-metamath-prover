@@ -33,7 +33,11 @@ def main(argv=None):
     gen.add_argument("--max-examples", type=int, default=120)
     gen.add_argument("--library-items", type=int, default=32)
     gen.add_argument("--library-bytes", type=int, default=2_000_000)
-    gen.add_argument("--axiom-instances-per-seed", type=int, default=8)
+    gen.add_argument("--axiom-instances-per-seed", type=int, default=0)
+    gen.add_argument("--generation-mode", choices=("graph", "random"), default="graph")
+    gen.add_argument("--instance-probability", type=float, default=0.10)
+    gen.add_argument("--max-depth", type=int, default=10)
+    gen.add_argument("--bootstrap-definitions", action="store_true")
     for mode in ("pretrain", "sft"):
         train = sub.add_parser(mode)
         train.add_argument("database")
@@ -85,6 +89,9 @@ def main(argv=None):
         _emit(generate_corpus(args.database, args.output, DataConfig(
             seeds=tuple(int(s) for s in args.seeds.split(",")), steps_per_seed=args.steps_per_seed,
             max_examples=args.max_examples, library_items=args.library_items, library_bytes=args.library_bytes,
+            generation_mode=args.generation_mode, graph_instance_probability=args.instance_probability,
+            max_depth=args.max_depth,
+            bootstrap_definitions=args.bootstrap_definitions,
             axiom_instances_per_seed=args.axiom_instances_per_seed)))
         return
     from .kernel import ProofKernel, theorem_from_data

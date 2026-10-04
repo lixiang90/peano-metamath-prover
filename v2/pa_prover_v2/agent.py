@@ -707,20 +707,42 @@ def augment_teacher_actions(
         records = library.search(goal, limit=4,
                                  exclude_fingerprints={statement_fingerprint(certificate)})
         facts = {fact.conclusion: ref for ref, fact in session.facts.items()}
-        state = ProofState(tuple(facts), (goal,), frozenset(certificate.d_constraints),
-                           tuple(sorted(certificate.variable_types.items())))
+        from metamath_generator.unification import unify, substitute, UnificationError
         for record in records:
             counts["library_candidates_checked"] += 1
             rule = record.theorem
-            environment = BackwardEnvironment(kernel.database)
-            environment.assertions = {rule.name: rule}
-            for tactic in environment.enumerate_tactics(
-                state, max_candidates_per_variable=4, max_tactics=8, include_derived=False,
-            ):
-                if tactic.rule == "<ASSUMPTION>":
-                    continue
-                transition = environment.apply(state, tactic)
-                substitution = dict(transition.resolved_substitution)
+            # Match actual known premises jointly. Enumerating a Cartesian
+            # product of expressions for every free lemma variable can grow
+            # exponentially for randomly generated conditional lemmas.
+            names = {v: Node(f"__teacher_{i}") for i, v in enumerate(rule.variable_types)}
+            variables = {n.op for n in names.values()}
+            try:
+                base_subst = unify(substitute_simultaneous(rule.conclusion, names), goal, variables)
+            except UnificationError:
+                continue
+            plans = [base_subst]
+            attempts = 0
+            for hyp in rule.hypotheses:
+                next_plans = []
+                pattern = substitute_simultaneous(hyp.expr, names)
+                for plan in plans:
+                    for fact in facts:
+                        if attempts >= 128:
+                            break
+                        attempts += 1
+                        try:
+                            next_plans.append(unify(pattern, fact, variables, plan))
+                        except UnificationError:
+                            continue
+                        if len(next_plans) >= 8:
+                            break
+                    if len(next_plans) >= 8 or attempts >= 128:
+                        break
+                plans = next_plans
+                if not plans:
+                    break
+            for plan in plans:
+                substitution = {v: substitute(n, plan) for v, n in names.items() if n.op in plan}
                 premises = [substitute_simultaneous(h.expr, substitution) for h in rule.hypotheses]
                 if not all(premise in facts for premise in premises):
                     continue

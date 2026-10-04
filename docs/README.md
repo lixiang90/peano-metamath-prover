@@ -14,6 +14,8 @@
 
 ## 形式系统与数据
 
+- [随机证明图生成](random-proof-graphs.md)：新默认算法、自动合一、少量实例化、全步骤语料和 v2。
+
 - [基础数论定义](number-theory.md)：`peano-number-theory.mm` 的定义与目标边界。
 - [PA+ 分层定义](pa-plus-definitions.md)：68个保守定义、35个非逻辑目标、编译与审计。
 - [PA+ 随机生成](pa-plus-random-generation.md)：定义桥、有界项、目标引导、质量配额。

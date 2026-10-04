@@ -375,7 +375,7 @@ def test_small_generated_corpus_reloads_library_and_all_teacher_certificates(tmp
                for record in load_episodes(tmp_path, split, kernel=kernel)]
     assert len(records) == sum(manifest["counts"].values())
     assert manifest["generation_kind"]["random_axiom_instance"] == 4
-    assert manifest["generation_kind"]["composed_proof_dag"] > 0
+    assert sum(n for k, n in manifest["generation_kind"].items() if k != "random_axiom_instance") > 0
     for record in records:
         cert = theorem_from_data(record["certificate"])
         assert len(cert.proof.source_labels) <= 256
@@ -398,16 +398,16 @@ def test_warmup_budget_seed_quota_and_disable(tmp_path):
     with pytest.raises(ValueError, match="nonnegative integer"):
         DataConfig(axiom_instances_per_seed=-1).validate()
     manifest = generate_corpus(source, tmp_path / "three-seeds", DataConfig(
-        seeds=(7, 11, 19), max_examples=9, steps_per_seed=1,
+        seeds=(7, 11, 19), max_examples=9, steps_per_seed=1, axiom_instances_per_seed=8,
         validation_fraction=0, test_fraction=0, library_items=3,
     ))
     assert manifest["used_seeds"] == [7, 11, 19]
     assert manifest["seed_certificate_counts"] == {"7": 3, "11": 3, "19": 3}
-    assert manifest["generation_kind"] == {"random_axiom_instance": 9, "composed_proof_dag": 0}
+    assert manifest["generation_kind"] == {"random_axiom_instance": 9}
     assert sum(manifest["counts"].values()) == 9
     # A small label budget filters even verified warmup candidates before storage.
     tight = generate_corpus(source, tmp_path / "tight", DataConfig(
-        seeds=(7,), max_examples=2, steps_per_seed=1, max_proof_labels=3,
+        seeds=(7,), max_examples=2, steps_per_seed=1, max_proof_labels=3, axiom_instances_per_seed=8,
         validation_fraction=0, test_fraction=0, library_items=2,
     ))
     from pa_prover_v2.data import load_episodes

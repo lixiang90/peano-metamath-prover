@@ -17,6 +17,11 @@ The isolated [v2](v2/README.md) adds RoPE decoder-only models, a causal lemma
 encoder, a verified theorem library, explicit scratchpad agents, standard next-token
 pretraining, and RLVR. It keeps the same PA+ kernel and does not migrate v1 checkpoints.
 
+Data generation now defaults to random proof graphs shared by v1, HTPS, Scale, and
+v2: compose source or derived rules through automatic unification, with a 10%
+auxiliary instantiation probability. Scale generates fresh graphs instead of
+expanding a fixed template bank. See the [algorithm and commands](docs/random-proof-graphs.md).
+
 ## 1. What the system contains
 
 | Layer | Implementation | Role |

@@ -128,10 +128,12 @@ def _statement_fingerprint_cached(hypotheses, conclusion, variable_types, constr
     hypotheses = tuple(dict.fromkeys(hypotheses))
 
     def encode(node, mapping):
-        if not node.args and node.op in types:
+        if node.op in types:
             if node.op not in mapping:
                 mapping[node.op] = len(mapping)
-            return (1, types[node.op], mapping[node.op])
+            key = (1, types[node.op], mapping[node.op])
+            # QUANT variables are AST operators with arguments, not leaves.
+            return (*key, tuple(encode(child, mapping) for child in node.args)) if node.args else key
         return (0, node.op, tuple(encode(child, mapping) for child in node.args))
 
     initial = {}
