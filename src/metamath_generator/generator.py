@@ -477,16 +477,21 @@ class TheoremGenerator(_CompositionEngine):
         left_types: dict[str, str],
         right_types: dict[str, str],
     ) -> bool:
-        left_type = left_types.get(left.op) if not left.args else None
-        right_type = right_types.get(right.op) if not right.args else None
-        if left_type is not None or right_type is not None:
-            return (
-                left_type == right_type
-                if left_type is not None and right_type is not None
-                else True
-            )
+        """Conservative structural filter; full typed unification follows.
+
+        Leaf variables can stand for whole expressions. Applied operator
+        variables (e.g. QUANT) only replace a head symbol, so their argument
+        counts and children must still be compatible.
+        """
+        left_variable = left.op in left_types
+        right_variable = right.op in right_types
+        if (left_variable and not left.args) or (right_variable and not right.args):
+            # Different typecodes need not be disjoint: PA's var expressions
+            # can also be terms. Only the grammar-aware compose check can
+            # decide whether a substitution is well typed.
+            return True
         return (
-            left.op == right.op
+            (left_variable or right_variable or left.op == right.op)
             and len(left.args) == len(right.args)
             and all(
                 TheoremGenerator._nodes_may_unify(
