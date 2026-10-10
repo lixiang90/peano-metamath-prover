@@ -15,6 +15,8 @@
 ## 形式系统与数据
 
 - [随机证明图生成](random-proof-graphs.md)：新默认算法、自动合一、少量实例化、全步骤语料和 v2。
+- [通用 Metamath 生成器](generic-metamath-generation.md)：备用符号串算法、类型证明、
+  压缩证明验证、跨形式系统采样和独立证书。
 
 - [基础数论定义](number-theory.md)：`peano-number-theory.mm` 的定义与目标边界。
 - [PA+ 分层定义](pa-plus-definitions.md)：68个保守定义、35个非逻辑目标、编译与审计。
@@ -38,6 +40,8 @@
 ## 结果、路线与设计提案
 
 - [当前进展与研究路线](progress-and-roadmap.md)：当前工程状态、研究验收与下一步顺序。
+- [定理库增长与采样改进路线](sampling-and-library-growth.md)：当前采样机制、增长边界、
+  条件化合一、增量索引、跨批次引理池、混合采样与验收指标。
 - [形式系统演进设计](formal-system-evolution.md)：PA+ / Equations+ / Lean 等设计比较；
   不应把文中的未来方案视为均已实现。
 

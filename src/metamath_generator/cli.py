@@ -20,7 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("database", help="input .mm file")
     parser.add_argument(
         "--mode",
-        choices=["graph", "random", "forward"],
+        choices=["graph", "random", "forward", "generic"],
         default="graph",
     )
     parser.add_argument("--steps", type=int, default=5_000)
@@ -32,6 +32,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-proof-depth", type=int, default=8)
     parser.add_argument("--max-hypotheses", type=int, default=8)
     parser.add_argument("--max-variables", type=int, default=16)
+    generic = parser.add_argument_group("generic token sampler (only --mode generic)")
+    generic.add_argument("--max-tokens", type=int, default=192)
+    generic.add_argument("--max-proof-labels", type=int, default=4096)
+    generic.add_argument("--match-candidates", type=int, default=24)
+    generic.add_argument("--match-budget", type=int, default=4000)
+    generic.add_argument("--type-search-depth", type=int, default=6)
+    generic.add_argument("--seed-assertions", type=int, default=256)
+    generic.add_argument("--variables-per-type", type=int, default=4)
+    generic.add_argument("--max-pool-nodes", type=int, default=10000)
+    generic.add_argument("--typecode", help="filter generic JSONL output by leading constant; proofs retain all dependencies")
     parser.add_argument("--output-dir", default="generated")
     parser.add_argument(
         "--full-discharge-probability",
@@ -107,6 +117,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.mode == "generic":
+        return _generic_main(args)
     for option, value in (
         ("--full-discharge-probability", args.full_discharge_probability),
         ("--closed-parent-probability", args.closed_parent_probability),
@@ -225,6 +237,45 @@ def main(argv: list[str] | None = None) -> int:
         "single-definition search objects admitted="
         f"{summary.definition_only_search_admitted}"
     )
+    return 0
+
+
+def _generic_main(args: argparse.Namespace) -> int:
+    # Dispatch BEFORE the PA AST parser: generic theories need not have wff,
+    # |-, prefix syntax, or even nonempty variable replacements.
+    from .generic import GenericConfig, GenericGenerator
+    from .token_mm import TokenDatabase, TokenMMError
+
+    if args.dot or args.definition_catalog or args.bootstrap_definitions:
+        raise SystemExit("generic mode does not use --dot or PA definition catalogs/bootstrap")
+    try:
+        config = GenericConfig(
+            seed=args.seed, max_tokens=args.max_tokens,
+            max_hypotheses=args.max_hypotheses, max_variables=args.max_variables,
+            max_proof_depth=args.max_proof_depth, max_proof_labels=args.max_proof_labels,
+            match_candidates=args.match_candidates, match_budget=args.match_budget,
+            type_search_depth=args.type_search_depth, seed_assertions=args.seed_assertions,
+            variables_per_type=args.variables_per_type, max_pool_nodes=args.max_pool_nodes,
+            instance_probability=args.instance_probability,
+            partial_premise_probability=args.partial_premise_probability,
+        )
+        if args.steps < 0:
+            raise ValueError("steps must be non-negative")
+        database = TokenDatabase.from_file(args.database)
+        if args.typecode and args.typecode not in database.constants:
+            raise ValueError(f"unknown --typecode: {args.typecode}")
+        generator = GenericGenerator(database, config)
+        generator.generate(args.steps)
+        paths = generator.export(args.output_dir, typecode=args.typecode)
+        if args.metamath:
+            destination = Path(args.metamath)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(paths["metamath"].read_text(encoding="utf-8"), encoding="utf-8")
+    except (TokenMMError, ValueError, OSError) as exc:
+        raise SystemExit(f"generic generation failed: {exc}") from exc
+    print(f"generic: verified {database.verified_proofs} source proofs; "
+          f"generated {len(generator.generated)} theorems; pool={len(generator.pool)}")
+    print(f"statistics={dict(generator.stats)}; proofs={paths['metamath']}; summary={paths['summary']}")
     return 0
 
 

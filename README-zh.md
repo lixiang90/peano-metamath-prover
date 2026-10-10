@@ -33,6 +33,8 @@ MCTS 和 HTPS 共享数学语义，但并非仅有数值参数不同：搜索结
 v1、HTPS、Scale 和 v2 共享此算法。Scale 每批构造新图，旧模板重放需显式选择。
 算法与命令见 [随机证明图生成](docs/random-proof-graphs.md)。接线矩阵与命令见
 [训练与评估指南](docs/training-and-evaluation.md)。
+另提供[通用 Metamath 符号串采样器](docs/generic-metamath-generation.md)，通过
+`--mode generic` 显式启用；默认算法和现有训练流程保持不变。
 
 ## 2. 形式系统与可信边界
 

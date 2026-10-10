@@ -1,8 +1,14 @@
 # 随机证明图生成
 
 `graph` 是定理生成、v1 语料、HTPS 语料、Scale 和 v2 的新默认算法。
+
+不依赖 PA 语法的备用后端通过 `--mode generic` 显式使用，见
+[通用 Metamath 随机生成器](generic-metamath-generation.md)。它不改变本文默认流程。
 它借鉴 HTPS 附录 E.5 的前向证明图构造，由本项目的 Metamath 组合和验证内核实现，
 没有复制 Evariste 的代码，也不引入新的公理或外部数学证明数据。
+
+定理库扩大后的采样限制和待实施方案见
+[定理库增长与采样改进路线](sampling-and-library-growth.md)。
 
 ## 算法
 
