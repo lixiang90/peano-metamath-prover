@@ -15,6 +15,21 @@ from .environment import (
 from .tokenizer import MetamathTokenizer
 
 
+def _audit_candidates(state, gold_ids, candidates, positives, tokenizer, environment):
+    if not candidates:
+        if positives:
+            raise ValueError("positive indices without candidates")
+        return
+    if not positives or any(i < 0 or i >= len(candidates) for i in positives):
+        raise ValueError("invalid positive candidate indices")
+    if tuple(gold_ids) not in {tuple(candidates[i]) for i in positives}:
+        raise ValueError("gold action missing from positive candidates")
+    for ids in candidates:
+        tactic = parse_tactic_tokens(tokenizer.decode(ids), state.as_theorem(),
+                                     tokenizer, environment.database, environment=environment)
+        environment.apply(state, tactic)
+
+
 def audit_corpus_actions(
     database_path: str | Path,
     corpus_directory: str | Path,
@@ -34,22 +49,23 @@ def audit_corpus_actions(
         examples = load_examples(corpus / f"{split}.jsonl")
         for example in examples:
             try:
-                theorem = tokenizer.theorem_from_state_tokens(
+                state = tokenizer.proof_state_from_tokens(
                     example.state_tokens,
                     database,
-                    name=f"audit_{example.example_id}",
                 )
                 tactic = parse_tactic_tokens(
                     example.action_tokens,
-                    theorem,
+                    state.as_theorem(),
                     tokenizer,
                     database,
                     environment=environment,
                 )
                 environment.apply(
-                    ProofState.from_theorem(theorem),
+                    state,
                     tactic,
                 )
+                _audit_candidates(state, example.action_ids, example.candidate_action_ids,
+                                  example.positive_candidate_indices, tokenizer, environment)
                 valid += 1
             except Exception as exc:
                 failures.append({
@@ -139,22 +155,23 @@ def audit_scale_corpus(
                 try:
                     state_tokens = tokenizer.decode(state_ids)
                     action_tokens = tokenizer.decode(action_ids)
-                    theorem = tokenizer.theorem_from_state_tokens(
+                    state = tokenizer.proof_state_from_tokens(
                         state_tokens,
                         database,
-                        name=f"scale_audit_{record_id}",
                     )
                     tactic = parse_tactic_tokens(
                         action_tokens,
-                        theorem,
+                        state.as_theorem(),
                         tokenizer,
                         database,
                         environment=environment,
                     )
                     environment.apply(
-                        ProofState.from_theorem(theorem),
+                        state,
                         tactic,
                     )
+                    _audit_candidates(state, action_ids, record.get("candidate_action_ids", ()),
+                                      record.get("positive_candidate_indices", ()), tokenizer, environment)
                     valid += 1
                     valid_by_depth[proof_depth] = (
                         valid_by_depth.get(proof_depth, 0) + 1

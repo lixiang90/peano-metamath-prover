@@ -31,6 +31,11 @@ from .tokenizer import MetamathTokenizer
 @dataclass(frozen=True, slots=True)
 class ScaleCorpusConfig:
     generation_mode: str = "graph"
+    graph_training_mode: str = "trajectories"
+    trajectory_step_penalty: float = 0.01
+    candidate_limit: int = 16
+    shorten_trajectories: bool = True
+    sampling_mode: str = "balanced"
     graph_steps: int = 200
     graph_max_proof_depth: int = 12
     graph_instance_probability: float = 0.10
@@ -244,6 +249,10 @@ def _templates(
 ) -> _TemplatePool:
     result: list[_Template] = []
     for example in load_examples(split_path):
+        # Legacy template augmentation only supports complete single-goal states.
+        # Never silently discard the tail of a multi-goal obligation.
+        if example.state_tokens.count("<GOAL>") != 1:
+            continue
         theorem = tokenizer.theorem_from_state_tokens(
             example.state_tokens,
             database,

@@ -16,7 +16,10 @@ from .data import replay_record, audit_forward_dataset
 def build_graph_dataset(database_path, output_directory, cfg, base_tokenizer_path):
     output = Path(output_directory)
     options = {k: v for k, v in asdict(cfg).items() if k in {f.name for f in fields(CorpusBuildConfig)}}
-    options.update(include_source_actions=False, base_tokenizer=base_tokenizer_path)
+    # HTPS learns one AND/OR node per record; its downstream lemma conversion
+    # has a different contract from the v1 complete-state trajectory trainer.
+    options.update(include_source_actions=False, base_tokenizer=base_tokenizer_path,
+                   graph_training_mode="steps", sampling_mode="natural")
     manifest = build_corpus(database_path, output, CorpusBuildConfig(**options))
     database = parse(database_path)
     tokenizer = MetamathTokenizer.load(output / "tokenizer.json").upgraded_for_lemma_actions()

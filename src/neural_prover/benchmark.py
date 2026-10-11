@@ -150,7 +150,7 @@ def _corpus_directories(paths: tuple[str, ...]) -> list[Path]:
             base = manifest.get("base_corpus")
             if base:
                 pending.append(Path(base).resolve())
-            if (path / "train.jsonl").is_file():
+            if (path / "train.jsonl").is_file() or "shards" in manifest:
                 result.append(path)
         elif path.is_file() and path.name == "train.jsonl":
             result.append(path.parent)
@@ -166,15 +166,18 @@ def _training_leakage_index(
     index = _LeakageIndex(set(), set(), sources=tuple(paths))
     for directory in _corpus_directories(paths):
         tokenizer = MetamathTokenizer.load(directory / "tokenizer.json")
-        for example in load_examples(directory / "train.jsonl"):
-            theorem = tokenizer.theorem_from_state_tokens(
-                example.state_tokens,
-                database,
-                name=f"leakage_{example.example_id}",
-            )
-            profile = semantic_profile(theorem)
-            index.full_keys.add(profile.full_key)
-            index.conclusion_keys.add(profile.conclusion_key)
+        if (directory / "train.jsonl").exists():
+            token_stream = (e.state_tokens for e in load_examples(directory / "train.jsonl"))
+        else:
+            from .scale_data import iter_scale_records
+            token_stream = (tokenizer.decode(r["state"]) for r in iter_scale_records(directory, "train"))
+        for tokens in token_stream:
+            state = tokenizer.proof_state_from_tokens(tokens, database)
+            for goal in state.goals:
+                theorem = replace(state, goals=(goal,)).as_theorem()
+                profile = semantic_profile(theorem)
+                index.full_keys.add(profile.full_key)
+                index.conclusion_keys.add(profile.conclusion_key)
             index.examples += 1
     return index
 

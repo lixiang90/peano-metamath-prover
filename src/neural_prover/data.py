@@ -17,6 +17,7 @@ from metamath_generator.quality import semantic_profile
 
 from .tokenizer import MetamathTokenizer, TokenizerConfig
 from .data_contract import tokenizer_fingerprint
+from .sampling import supervision_histograms
 
 Split = Literal["train", "validation", "test"]
 Difficulty = Literal["easy", "medium", "hard"]
@@ -27,6 +28,11 @@ class CorpusBuildConfig:
     generation_mode: str = "graph"
     graph_instance_probability: float = 0.10
     graph_partial_premise_probability: float = 0.30
+    graph_training_mode: str = "trajectories"
+    trajectory_step_penalty: float = 0.01
+    candidate_limit: int = 16
+    shorten_trajectories: bool = True
+    sampling_mode: str = "balanced"
     max_proof_labels: int = 16384
     seeds: tuple[int, ...] = (7, 11, 19, 23)
     steps_per_seed: int = 5_000
@@ -55,6 +61,17 @@ class CorpusBuildConfig:
     tokenizer: TokenizerConfig = TokenizerConfig()
     base_tokenizer: str | None = None
 
+    def __post_init__(self):
+        import math
+        if self.graph_training_mode not in {"trajectories", "steps"}:
+            raise ValueError("graph_training_mode must be trajectories or steps")
+        if self.sampling_mode not in {"balanced", "natural"}:
+            raise ValueError("sampling_mode must be balanced or natural")
+        if self.candidate_limit < 0:
+            raise ValueError("candidate_limit must be nonnegative")
+        if not math.isfinite(self.trajectory_step_penalty) or not 0 < self.trajectory_step_penalty <= 1:
+            raise ValueError("trajectory_step_penalty must be in (0, 1]")
+
 
 @dataclass(frozen=True, slots=True)
 class ProverExample:
@@ -76,6 +93,16 @@ class ProverExample:
     generation_kind: str = "search"
     guidance_target: str | None = None
     definition_support: tuple[str, ...] = ()
+
+    trajectory_id: str | None = None
+    trajectory_step: int = 0
+    remaining_steps: int = 0
+    goal_count: int = 1
+    structure_family: str = "legacy"
+    reference_steps: int = 0
+    rule_premise_count: int = 0
+    candidate_action_ids: tuple[tuple[int, ...], ...] = ()
+    positive_candidate_indices: tuple[int, ...] = ()
 
     def to_record(self) -> dict:
         record = asdict(self)
@@ -106,6 +133,8 @@ class ProverExample:
             "definition_support",
         ):
             converted[key] = tuple(converted[key])
+        converted["candidate_action_ids"] = tuple(tuple(a) for a in converted.get("candidate_action_ids", ()))
+        converted["positive_candidate_indices"] = tuple(converted.get("positive_candidate_indices", ()))
         return cls(**converted)
 
 
@@ -240,6 +269,11 @@ def _source_examples(
     tokenizer: MetamathTokenizer,
     config: CorpusBuildConfig,
 ) -> Iterable[ProverExample]:
+    from .environment import BackwardEnvironment, ProofState, Tactic
+    from .trajectories import candidate_supervision, structure_family
+    trajectories = config.generation_mode == "graph" and config.graph_training_mode == "trajectories"
+    environment = BackwardEnvironment(database)
+    environment.configure_from_tokenizer(tokenizer)
     for theorem in database.logical_assertions.values():
         canonical = tokenizer.canonical_variables(theorem)
         state_tokens = tuple(tokenizer.state_tokens(theorem, canonical))
@@ -261,6 +295,12 @@ def _source_examples(
         digest = hashlib.sha256(
             f"source:{theorem.name}".encode("utf-8")
         ).hexdigest()[:20]
+        candidates, positives = ((), ())
+        if trajectories:
+            candidates, positives = candidate_supervision(
+                ProofState.from_theorem(theorem), Tactic.create(theorem.name, substitution), {},
+                environment, tokenizer, config,
+            )
         yield ProverExample(
             example_id=f"source_{digest}",
             split="train",
@@ -275,12 +315,18 @@ def _source_examples(
             rule=theorem.name,
             proof_depth=1,
             quality_score=100.0,
-            value_target=0.5,
+            value_target=max(0., 1. - config.trajectory_step_penalty) if trajectories else 0.5,
             state_tokens=state_tokens,
             action_tokens=action_tokens,
             state_ids=tuple(tokenizer.encode(state_tokens)),
             action_ids=tuple(tokenizer.encode(action_tokens)),
             generation_kind="source",
+            remaining_steps=1 if trajectories else 0,
+            reference_steps=1 if trajectories else 0,
+            rule_premise_count=len(theorem.hypotheses),
+            structure_family=structure_family(ProofState.from_theorem(theorem)),
+            candidate_action_ids=candidates,
+            positive_candidate_indices=positives,
         )
 
 
@@ -300,6 +346,11 @@ def _graph_examples(generator, tokenizer, config):
     from metamath_generator.parser import MetamathParser
     from .environment import BackwardEnvironment, ProofState, parse_tactic_tokens
 
+    if config.graph_training_mode not in {"trajectories", "steps"}:
+        raise ValueError("graph_training_mode must be trajectories or steps")
+    import math
+    if not math.isfinite(config.trajectory_step_penalty) or not 0 < config.trajectory_step_penalty <= 1:
+        raise ValueError("trajectory_step_penalty must be in (0, 1]")
     parser = MetamathParser()
     source = " ".join(parser._tokens_with_includes(Path(generator.parsed.source_path).resolve(), set()))
     expanded = replay_graph(generator.store, source)
@@ -316,6 +367,19 @@ def _graph_examples(generator, tokenizer, config):
             if "proof label budget exceeded" not in str(exc):
                 raise
             generator.rejected["graph_certificate_budget"] += 1
+            continue
+        if config.graph_training_mode == "trajectories":
+            from .trajectories import trajectory_examples
+            try:
+                examples = trajectory_examples(cert, environment, tokenizer, config)
+            except ValueError:
+                generator.rejected["graph_trajectory_encoding"] += 1
+                continue
+            for example in examples:
+                if example.example_id not in seen:
+                    seen.add(example.example_id)
+                    yield replace(example, generation_kind=generator.generation_context.get(root.id, "random_graph"),
+                                  definition_support=tuple(sorted(generator.definition_support.get(root.id, ()))))
             continue
         for theorem in certificate_steps(cert, generator.parsed):
             try:
@@ -509,11 +573,14 @@ def build_corpus(
     if cfg.include_source_actions:
         source_families = {_conclusion_bytes(t) for t in database.logical_assertions.values()}
         for key, example in list(best.items()):
-            theorem = tokenizer.theorem_from_state_tokens(example.state_tokens, database)
+            theorem = tokenizer.proof_state_from_tokens(example.state_tokens, database).as_theorem()
             if _conclusion_bytes(theorem) in source_families:
                 best[key] = replace(example, split="train")
         for example in _source_examples(database, tokenizer, cfg):
             best[example.example_id] = example
+
+    from .trajectories import merge_positive_candidates
+    best = {e.example_id: e for e in merge_positive_candidates(list(best.values()))}
 
     output = Path(output_directory)
     output.mkdir(parents=True, exist_ok=True)
@@ -543,10 +610,12 @@ def build_corpus(
         ))
 
     manifest = {
-        "format": "peano-neural-corpus-v2",
+        "format": "peano-neural-corpus-v3",
         "generation_algorithm": cfg.generation_mode,
-        "proof_depth_kind": "expanded source logical steps" if cfg.generation_mode == "graph" else "stored dependency DAG",
-        "supervision": ("all instantiated source-rule steps from verified proof graphs"
+        "training_sampling": cfg.sampling_mode,
+        "supervision_histograms": supervision_histograms(best.values()),
+        "proof_depth_kind": ("remaining verified backward actions" if cfg.graph_training_mode == "trajectories" else "expanded source logical steps") if cfg.generation_mode == "graph" else "stored dependency DAG",
+        "supervision": ("complete backward replay with multi-goal states and witnessed positive candidates" if cfg.generation_mode == "graph" and cfg.graph_training_mode == "trajectories" else "all instantiated source-rule steps from verified proof graphs"
                         if cfg.generation_mode == "graph" else "legacy root actions"),
         "database": str(Path(database_path).resolve()),
         "configuration": {
@@ -567,8 +636,9 @@ def build_corpus(
         ),
         "runs": run_summaries,
         "leakage_control": (
-            "split is assigned by SHA-256 of the alpha-normalized conclusion; "
-            "all premise variants of one conclusion stay in the same split"
+            "split is assigned by SHA-256 of the alpha-normalized active conclusion; "
+            "source families are training-only when source actions are included; pending goals "
+            "and proof skeletons may overlap, so independent full-proof benchmarks are required"
         ),
     }
     (output / "manifest.json").write_text(

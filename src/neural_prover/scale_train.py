@@ -32,7 +32,7 @@ class ScaleTrainingConfig:
     warmup_steps: int = 10
     weight_decay: float = 0.1
     value_loss_weight: float = 0.25
-    candidate_loss_weight: float = 0.0
+    candidate_loss_weight: float = 0.25
     gradient_clip: float = 1.0
     seed: int = 20260729
     device: str = "auto"
@@ -79,6 +79,10 @@ def _records_from_shards(corpus: Path, shards: list[dict]) -> Iterator[dict]:
                     yield json.loads(line)
 
 
+def _record_length(record):
+    return max(map(len, (record["state"], record["action"], *record.get("candidate_action_ids", ()))))
+
+
 def _raw_shuffled_records(
     corpus: Path,
     split: str,
@@ -97,6 +101,13 @@ def _raw_shuffled_records(
         has_records = False
         for record in _records_from_shards(corpus, shards):
             has_records = True
+            if split == "train" and manifest.get("training_sampling") == "balanced":
+                buffer.append(record)
+                if len(buffer) >= buffer_size:
+                    from .sampling import balanced_window
+                    yield from balanced_window(buffer, rng)
+                    buffer.clear()
+                continue
             buffer.append(record)
             if len(buffer) >= buffer_size:
                 index = rng.randrange(len(buffer))
@@ -104,6 +115,10 @@ def _raw_shuffled_records(
                 yield buffer.pop()
         if not has_records:
             raise ValueError(f"scale corpus split {split!r} is empty")
+        if buffer and split == "train" and manifest.get("training_sampling") == "balanced":
+            from .sampling import balanced_window
+            yield from balanced_window(buffer, rng)
+            buffer.clear()
         while buffer:
             index = rng.randrange(len(buffer))
             buffer[index], buffer[-1] = buffer[-1], buffer[index]
@@ -187,7 +202,7 @@ class _ResumableRecordStream:
             if self._split == "train" and manifest.get("training_replay"):
                 shards.append(manifest["training_replay"])
             for record in _records_from_shards(self._corpus, shards):
-                length = max(len(record["state"]), len(record["action"]))
+                length = _record_length(record)
                 self._known_lengths.add(length)
                 pending = [
                     (minimum, maximum)
@@ -269,6 +284,7 @@ def _pad(sequences: list[list[int]], pad_id: int) -> Tensor:
 
 
 def _collate(records: list[dict], pad_id: int) -> dict[str, Tensor]:
+    from .candidate_training import candidate_batch
     actions = _pad([record["action"] for record in records], pad_id)
     return {
         "state": _pad(
@@ -278,6 +294,9 @@ def _collate(records: list[dict], pad_id: int) -> dict[str, Tensor]:
         "action_input": actions[:, :-1],
         "action_target": actions[:, 1:],
         "action_full": actions,
+        **candidate_batch([r["action"] for r in records],
+                          [r.get("candidate_action_ids", ()) for r in records],
+                          [r.get("positive_candidate_indices", ()) for r in records], pad_id),
         "value_target": torch.tensor(
             [float(record["value"]) for record in records],
             dtype=torch.float32,
@@ -312,7 +331,7 @@ def _next_batch(
                 "record stream ended before a full batch was available in "
                 f"token range [{minimum_tokens}, {maximum_tokens}]"
             ) from error
-        length = max(len(record["state"]), len(record["action"]))
+        length = _record_length(record)
         if length > maximum_tokens or length < minimum_tokens:
             continue
         selected.append(record)
@@ -786,11 +805,8 @@ def train_scale_model(
                 value_loss = F.mse_loss(value, value_target)
                 candidate_loss = logits.new_zeros(())
                 if cfg.candidate_loss_weight > 0:
-                    full_actions = batch["action_full"].to(device)
-                    scores, _ = model.score_candidate_matrix(state, full_actions)
-                    positives = full_actions[:, None, :].eq(full_actions[None, :, :]).all(dim=-1)
-                    positive_scores = scores.masked_fill(~positives, float("-inf"))
-                    candidate_loss = (torch.logsumexp(scores, dim=1) - torch.logsumexp(positive_scores, dim=1)).mean()
+                    from .candidate_training import candidate_objective
+                    candidate_loss, _, _ = candidate_objective(model, state, batch)
                 loss = (
                     policy_loss
                     + cfg.value_loss_weight * value_loss

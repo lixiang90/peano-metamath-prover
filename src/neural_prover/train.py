@@ -69,6 +69,7 @@ def _collate(
     examples: list[ProverExample],
     pad_id: int,
 ) -> dict[str, Tensor]:
+    from .candidate_training import candidate_batch
     actions = _pad([example.action_ids for example in examples], pad_id)
     return {
         "state": _pad(
@@ -78,6 +79,8 @@ def _collate(
         "action_input": actions[:, :-1],
         "action_target": actions[:, 1:],
         "action_full": actions,
+        **candidate_batch([e.action_ids for e in examples], [e.candidate_action_ids for e in examples],
+                          [e.positive_candidate_indices for e in examples], pad_id),
         "value_target": torch.tensor(
             [example.value_target for example in examples],
             dtype=torch.float32,
@@ -127,7 +130,6 @@ def _epoch(
         state = batch["state"].to(device)
         action_input = batch["action_input"].to(device)
         action_target = batch["action_target"].to(device)
-        action_full = batch["action_full"].to(device)
         value_target = batch["value_target"].to(device)
         with torch.set_grad_enabled(training):
             logits, value = model(state, action_input)
@@ -137,20 +139,8 @@ def _epoch(
                 ignore_index=pad_id,
             )
             value_loss = F.mse_loss(value, value_target)
-            candidate_scores, _ = model.score_candidate_matrix(
-                state, action_full
-            )
-            duplicate_actions = action_full[:, None, :].eq(
-                action_full[None, :, :]
-            ).all(dim=-1)
-            positive_scores = candidate_scores.masked_fill(
-                ~duplicate_actions,
-                float("-inf"),
-            )
-            candidate_loss = -(
-                torch.logsumexp(positive_scores, dim=1)
-                - torch.logsumexp(candidate_scores, dim=1)
-            ).mean()
+            from .candidate_training import candidate_objective
+            candidate_loss, candidate_scores, positive_candidates = candidate_objective(model, state, batch)
             loss = (
                 policy_loss
                 + value_weight * value_loss
@@ -177,7 +167,7 @@ def _epoch(
         )
         best_candidates = candidate_scores.argmax(dim=1)
         totals["candidate_correct"] += int(
-            duplicate_actions[
+            positive_candidates[
                 torch.arange(len(state), device=device),
                 best_candidates,
             ].sum().item()
@@ -258,7 +248,8 @@ def train_model(
         validate_checkpoint_tokenizer(model, payload, tokenizer)
         model_cfg = model.config
         inherited_metadata = payload.get("metadata", {})
-        if any(len(e.state_ids) > model_cfg.max_state_tokens or len(e.action_ids) > model_cfg.max_action_tokens
+        if any(len(e.state_ids) > model_cfg.max_state_tokens or
+               max(map(len, (e.action_ids, *e.candidate_action_ids))) > model_cfg.max_action_tokens
                for e in train_examples + validation_examples):
             raise ValueError("fine-tuning data exceeds checkpoint context limits; regenerate with smaller limits")
     else:
@@ -280,7 +271,11 @@ def train_model(
     generator = torch.Generator().manual_seed(cfg.seed)
     collate = lambda examples: _collate(examples, tokenizer.pad_id)
     sampler = None
-    if cfg.pa_plus_balanced_sampling and tokenizer.pa_plus_context.enabled:
+    if cfg.pa_plus_balanced_sampling and manifest.get("training_sampling") == "balanced":
+        from .sampling import balanced_weights
+        sampler = WeightedRandomSampler(balanced_weights(train_examples), len(train_examples),
+                                        replacement=True, generator=generator)
+    elif cfg.pa_plus_balanced_sampling and tokenizer.pa_plus_context.enabled and "training_sampling" not in manifest:
         weights = {
             "source": 0.5,
             "definition_bridge": 0.75,

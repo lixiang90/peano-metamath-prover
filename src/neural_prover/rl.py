@@ -233,6 +233,9 @@ class ReinforcementConfig:
 
 @dataclass(frozen=True, slots=True)
 class ReplayCollectionConfig:
+    external_verifier: str | None = None
+    require_external_verification: bool = True
+    verification_timeout: float = 30.0
     examples: int = 32
     simulations: int = 100
     max_depth: int = 16
@@ -278,6 +281,53 @@ def _curriculum_sample(candidates, count: int, seed: int):
     return selected
 
 
+def training_candidates(corpus, tokenizer, database, capacity=256, seed=7):
+    """Bounded reservoir of training-only, complete single-root targets."""
+    from .data import ProverExample
+    from .scale_data import iter_scale_records
+    rng = random.Random(seed)
+    corpus = Path(corpus)
+    if (corpus / "manifest.json").exists() and not (corpus / "train.jsonl").exists():
+        def stream():
+            for r in iter_scale_records(corpus, "train"):
+                tokens = tuple(tokenizer.decode(r["state"]))
+                state = tokenizer.proof_state_from_tokens(tokens, database)
+                if len(state.goals) != 1:
+                    continue
+                action = tuple(tokenizer.decode(r["action"]))
+                rule = action[action.index("<RULE>") + 1] if "<RULE>" in action else "<ASSUMPTION>"
+                yield ProverExample(r["id"], "train", "synthetic", r.get("difficulty", "medium"),
+                    r["id"], state.current_goal.to_prefix(), tuple(h.to_prefix() for h in state.hypotheses),
+                    rule, r.get("proof_depth", 0), 0., r["value"], tokens, action,
+                    tuple(r["state"]), tuple(r["action"]), remaining_steps=r.get("remaining_steps", 0),
+                    structure_family=r.get("structure_family", "legacy"),
+                    rule_premise_count=r.get("rule_premise_count", 0))
+        examples = stream()
+    else:
+        examples = load_examples(corpus / "train.jsonl")
+    chosen = []
+    count = 0
+    for e in examples:
+        if e.split != "train" or e.origin != "synthetic" or e.state_tokens.count("<GOAL>") != 1:
+            continue
+        count += 1
+        if len(chosen) < capacity:
+            chosen.append(e)
+        else:
+            index = rng.randrange(count)
+            if index < capacity:
+                chosen[index] = e
+    return chosen
+
+
+def sample_training_targets(corpus, candidates, count, seed):
+    manifest = json.loads((Path(corpus) / "manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("training_sampling") == "balanced":
+        from .sampling import balanced_order
+        return balanced_order(candidates, seed)[:count]
+    return _curriculum_sample(candidates, count, seed)
+
+
 def collect_replay_from_corpus(
     checkpoint: str | Path,
     corpus_directory: str | Path,
@@ -293,18 +343,19 @@ def collect_replay_from_corpus(
     database = parse(database_path)
     corpus = Path(corpus_directory)
     tokenizer = MetamathTokenizer.load(corpus / "tokenizer.json")
-    candidates = [
-        example for example in load_examples(corpus / "train.jsonl")
-        if example.origin == "synthetic"
-    ]
-    candidates = _curriculum_sample(
-        candidates, cfg.examples, cfg.seed
+    candidates = training_candidates(corpus, tokenizer, database, max(256, cfg.examples * 16), cfg.seed)
+    candidates = sample_training_targets(
+        corpus, candidates, cfg.examples, cfg.seed
     )
     model, payload = ProofTransformer.load_checkpoint(
         checkpoint,
         map_location=device,
     )
     validate_checkpoint_tokenizer(model, payload, tokenizer)
+    if cfg.require_external_verification:
+        from .external import discover_metamath_executable
+        if discover_metamath_executable(cfg.external_verifier) is None:
+            raise ValueError("replay collection requires an official Metamath executable")
     environment = BackwardEnvironment(database)
     neural = TransformerPolicy(
         model,
@@ -340,6 +391,7 @@ def collect_replay_from_corpus(
         result = prover.prove(ProofState.from_theorem(theorem))
         attempted += 1
         certified = False
+        verification = None
         certificate_error: str | None = None
         outcome = result.outcome
         if result.search.solved:
@@ -350,10 +402,15 @@ def collect_replay_from_corpus(
                     database,
                     name=f"rl_cert_{example.example_id}",
                 )
-                verify_certificate(certificate, database)
-                certified = True
-                outcome = "certified_solution"
-                solved += 1
+                from .verification import verification_record
+                certified, verification = verification_record(
+                    certificate, database, database_path, external_verifier=cfg.external_verifier,
+                    require_external=cfg.require_external_verification,
+                    timeout_seconds=cfg.verification_timeout,
+                )
+                outcome = "certified_solution" if certified else "rejected_external_certificate"
+                solved += int(certified)
+                rejected_certificates += int(not certified)
             except Exception as exc:
                 # An unverified success must never become a positive reward.
                 rejected_certificates += 1
@@ -380,6 +437,7 @@ def collect_replay_from_corpus(
             "source_rule": example.rule,
             "certified": certified,
             "certificate_error": certificate_error,
+            "verification": verification,
             "outcome": outcome,
             "simulations": result.search.simulations,
             "nodes": result.search.nodes,
@@ -402,7 +460,7 @@ def collect_replay_from_corpus(
         "configuration": asdict(cfg),
         "device": str(device),
         "data_policy": (
-            "only synthetic examples from train.jsonl; validation, test, "
+            "only synthetic examples from the training split (plain or sharded); validation, test, "
             "benchmark, and famous frontier statements are excluded"
         ),
         "attempted": attempted,

@@ -30,6 +30,18 @@ def validate_record_encoding(record: dict, tokenizer: MetamathTokenizer, *, lemm
         ids = record[f"{prefix}_ids"]
         if not tokens or tokenizer.encode(tokens) != list(ids):
             raise ValueError(f"{prefix} token/ID mismatch")
+    candidates = record.get("candidate_action_ids", ())
+    positives = record.get("positive_candidate_indices", ())
+    if candidates:
+        if not positives or any(i < 0 or i >= len(candidates) for i in positives):
+            raise ValueError("invalid candidate positives")
+        if tuple(record["action_ids"]) not in {tuple(candidates[i]) for i in positives}:
+            raise ValueError("gold action missing from positive candidates")
+        if any(not ids or any(not isinstance(i, int) or not 0 <= i < len(tokenizer) for i in ids)
+               for ids in candidates):
+            raise ValueError("invalid candidate token IDs")
+    elif positives:
+        raise ValueError("candidate positives require candidate actions")
 
 
 def validate_checkpoint_tokenizer(model, payload: dict, tokenizer: MetamathTokenizer) -> None:

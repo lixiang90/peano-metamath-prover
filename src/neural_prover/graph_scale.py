@@ -19,6 +19,8 @@ def build_graph_scale_corpus(database_path, base_directory, output_directory, cf
     from .scale_data import _length_bucket
     if min(cfg.shard_size, cfg.graph_steps, cfg.graph_max_proof_depth, cfg.max_graph_batches) <= 0:
         raise ValueError("positive shard and graph budgets required")
+    if cfg.sampling_mode not in {"balanced", "natural"}:
+        raise ValueError("sampling_mode must be balanced or natural")
     targets = dict(train=cfg.train_examples, validation=cfg.validation_examples, test=cfg.test_examples)
     if min(targets.values()) < 0 or cfg.max_new_records < 0:
         raise ValueError("record budgets must be non-negative")
@@ -38,13 +40,14 @@ def build_graph_scale_corpus(database_path, base_directory, output_directory, cf
         if manifest.get("configuration") != stable or any(manifest.get(k) != v for k, v in identity.items()):
             raise ValueError("existing graph corpus configuration/theory/tokenizer does not match")
     else:
-        manifest = {"format": "peano-scale-corpus-v3", "generation_algorithm": "random_proof_graph",
-                    "configuration": stable, **identity, "database": str(Path(database_path).resolve()),
+        manifest = {"format": "peano-scale-corpus-v4", "generation_algorithm": "random_proof_graph",
+                    "configuration": stable, "training_sampling": cfg.sampling_mode, **identity, "database": str(Path(database_path).resolve()),
+                    "proof_depth_kind": "remaining verified backward actions" if cfg.graph_training_mode == "trajectories" else "expanded source logical steps",
                     "targets": targets, "counts": {s: 0 for s in targets},
                     "shards": {s: [] for s in targets}, "cursor": [0, 0],
                     "proof_depth_histogram": {s: {} for s in targets}, "length_histogram": {},
                     "complete": False, "total": 0, "maximum_proof_depth": 0, "graph_runs": {},
-                    "leakage_control": "alpha-normalized conclusion families; all source steps audited",
+                    "leakage_control": "alpha-normalized active conclusion families; pending goals and proof skeletons may overlap; use independent full-proof benchmarks",
                     "worker_policy": "bounded graphs processed serially; workers is reserved for template mode"}
     tokenizer.save(output / "tokenizer.json")
     seen = set()
@@ -59,6 +62,7 @@ def build_graph_scale_corpus(database_path, base_directory, output_directory, cf
     pending = {s: [] for s in targets}
 
     def save():
+        from .sampling import supervision_histograms
         # Commit all splits and the exact graph/record cursor together. A
         # partial graph is regenerated deterministically when resuming.
         for split, rows in pending.items():
@@ -80,9 +84,10 @@ def build_graph_scale_corpus(database_path, base_directory, output_directory, cf
                     hist = manifest["proof_depth_histogram"][split]
                     hist[depth] = hist.get(depth, 0) + n
                 for r in batch:
-                    key = _length_bucket(max(len(r["state"]), len(r["action"])))
+                    key = _length_bucket(max(map(len, (r["state"], r["action"], *r["candidate_action_ids"]))))
                     hist = manifest["length_histogram"]
                     hist[key] = hist.get(key, 0) + 1
+                supervision_histograms(batch, manifest.setdefault("supervision_histograms", {}))
             rows.clear()
         manifest["total"] = sum(manifest["counts"].values())
         manifest["maximum_proof_depth"] = max((int(d) for h in manifest["proof_depth_histogram"].values() for d in h), default=0)
@@ -92,7 +97,8 @@ def build_graph_scale_corpus(database_path, base_directory, output_directory, cf
         temporary.replace(path)
 
     data_cfg = CorpusBuildConfig(max_state_tokens=cfg.max_state_tokens, max_action_tokens=cfg.max_action_tokens,
-                                include_source_actions=False, max_proof_depth=cfg.graph_max_proof_depth)
+                                include_source_actions=False, max_proof_depth=cfg.graph_max_proof_depth,
+                                graph_training_mode=cfg.graph_training_mode, trajectory_step_penalty=cfg.trajectory_step_penalty, candidate_limit=cfg.candidate_limit, shorten_trajectories=cfg.shorten_trajectories, sampling_mode=cfg.sampling_mode)
     while remaining and not all(manifest["counts"][s] == targets[s] for s in targets):
         graph_index, offset = manifest["cursor"]
         if graph_index >= cfg.max_graph_batches:
@@ -105,6 +111,11 @@ def build_graph_scale_corpus(database_path, base_directory, output_directory, cf
         ))
         generator.generate("graph", cfg.graph_steps)
         records = list(_graph_examples(generator, tokenizer, data_cfg))
+        from .trajectories import merge_positive_candidates
+        records = merge_positive_candidates(records)
+        if cfg.sampling_mode == "balanced":
+            from .sampling import balanced_order
+            records = balanced_order(records, cfg.seed + graph_index)
         manifest["graph_runs"][str(graph_index)] = {
             "statistics": dict(generator.stats), "filtered": dict(generator.rejected),
             "nodes": generator.generated_count, "training_steps": len(records),
@@ -120,7 +131,13 @@ def build_graph_scale_corpus(database_path, base_directory, output_directory, cf
                 "action": list(example.action_ids), "value": example.value_target,
                 "difficulty": example.difficulty, "proof_depth": example.proof_depth,
                 "generation_kind": example.generation_kind, "definition_support": list(example.definition_support),
-                "graph_index": graph_index})
+                "graph_index": graph_index, "trajectory_id": example.trajectory_id,
+                "trajectory_step": example.trajectory_step, "remaining_steps": example.remaining_steps,
+                "goal_count": example.goal_count, "hypothesis_count": len(example.hypotheses),
+                "rule": example.rule, "structure_family": example.structure_family,
+                "rule_premise_count": example.rule_premise_count,
+                "reference_steps": example.reference_steps, "candidate_action_ids": example.candidate_action_ids,
+                "positive_candidate_indices": example.positive_candidate_indices})
             manifest["counts"][split] += 1
             remaining -= 1
             if sum(map(len, pending.values())) >= cfg.shard_size:

@@ -149,7 +149,7 @@ $}
 """, encoding="utf-8")
     corpus = tmp_path / "corpus"
     result = build_corpus(source, corpus, CorpusBuildConfig(seeds=(7,), steps_per_seed=1,
-        graph_instance_probability=0, include_source_actions=False))
+        graph_training_mode="steps", graph_instance_probability=0, include_source_actions=False))
     # The complete proof is valid. Its ax step has ph in the goal; forget
     # uses ph only in its action, beyond what the v1 state protocol supports.
     assert result["total"] == 1
@@ -233,7 +233,7 @@ def test_graph_without_random_substitution_reuses_derived_rules_and_proves_deepe
 
 
 def test_graph_data_contains_all_source_steps_and_audits(tmp_path):
-    result = build_corpus(PA, tmp_path, CorpusBuildConfig(seeds=(7,), steps_per_seed=60,
+    result = build_corpus(PA, tmp_path, CorpusBuildConfig(graph_training_mode="steps", seeds=(7,), steps_per_seed=60,
         graph_instance_probability=0, include_source_actions=False, max_state_tokens=1024,
         max_action_tokens=1024, max_proof_depth=10))
     examples = [e for s in ("train", "validation", "test") for e in load_examples(tmp_path / f"{s}.jsonl")]

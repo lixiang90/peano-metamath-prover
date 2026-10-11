@@ -322,7 +322,7 @@ python -m neural_prover evaluate-mcts \
 
 python -m neural_prover collect-replay \
   outputs/model/final.pt outputs/corpus formal/peano-number-theory.mm \
-  outputs/replay.jsonl
+  outputs/replay.jsonl --external-verifier /path/to/metamath
 
 python -m neural_prover reinforce \
   outputs/model/final.pt outputs/replay.jsonl outputs/model/rl-1.pt

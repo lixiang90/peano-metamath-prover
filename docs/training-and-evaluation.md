@@ -128,6 +128,9 @@ python -m neural_prover evaluate-mcts outputs/unified-mcts/model/final.pt \
 必须将 `/path/to/metamath` 换成实际程序路径。也可省略 `--external-verifier` 并设置
 `METAMATH_EXECUTABLE`；不要省略正式评估所需的 `--require-external-verification`。
 缺失、超时或验证失败不会计为认证成功。对照结果不得包含训练时的私有参考证明。
+v1/Scale 的多目标监督、同状态候选和在线 `train-rlvr` 见
+[完整状态监督与 RLVR](proof-training-trajectories.md)。MCTS `collect-replay` 现要求
+`--external-verifier`，成功回放必须通过官方验证。
 MCTS 的 `collect-replay` / `reinforce`、中间引理与潜在模型升级示例见
 [路线与验收](progress-and-roadmap.md)和[潜在推理设计](lemma-and-latent-reasoning.md)。
 

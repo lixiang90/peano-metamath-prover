@@ -21,6 +21,8 @@ Data generation now defaults to random proof graphs shared by v1, HTPS, Scale, a
 v2: compose source or derived rules through automatic unification, with a 10%
 auxiliary instantiation probability. Scale generates fresh graphs instead of
 expanding a fixed template bank. See the [algorithm and commands](docs/random-proof-graphs.md).
+New v1/Scale graph corpora use [complete-state proof replay](docs/proof-training-trajectories.md),
+same-state multi-positive candidate training, balanced sampling, and optional online RLVR with official proof rewards.
 An optional [generic Metamath token sampler](docs/generic-metamath-generation.md)
 is available with `--mode generic`; the default algorithm and training pipelines remain unchanged.
 

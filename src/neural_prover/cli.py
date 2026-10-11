@@ -37,6 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
     corpus.add_argument("--seeds", default="7,11,19,23")
     corpus.add_argument("--steps-per-seed", type=int, default=5_000)
     corpus.add_argument("--generation-mode", choices=("graph", "random"), default="graph")
+    corpus.add_argument("--graph-training-mode", choices=("trajectories", "steps"), default="trajectories")
+    corpus.add_argument("--trajectory-step-penalty", type=float, default=0.01)
+    corpus.add_argument("--candidate-limit", type=int, default=16)
+    corpus.add_argument("--sampling-mode", choices=("balanced", "natural"), default="balanced")
+    corpus.add_argument("--no-shortcuts", action="store_true")
     corpus.add_argument("--instance-probability", type=float, default=0.10)
     corpus.add_argument("--partial-premise-probability", type=float, default=0.30,
                         help="graph: probability of reserving one premise for multi-premise rules")
@@ -280,6 +285,21 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--max-depth", type=int, default=16)
     collect.add_argument("--branching", type=int, default=32)
     collect.add_argument("--device", default="auto")
+    collect.add_argument("--external-verifier", required=True)
+    collect.add_argument("--verification-timeout", type=float, default=30.0)
+
+    rlvr = commands.add_parser("train-rlvr", help="training-only online policy gradients with official proof rewards")
+    for argument in ("checkpoint", "corpus", "database", "output"):
+        rlvr.add_argument(argument)
+    rlvr.add_argument("--external-verifier", required=True)
+    rlvr.add_argument("--groups", type=int, default=8)
+    rlvr.add_argument("--group-size", type=int, default=4)
+    rlvr.add_argument("--max-steps", type=int, default=24)
+    rlvr.add_argument("--candidate-limit", type=int, default=32)
+    rlvr.add_argument("--seconds-per-rollout", type=float, default=10.0)
+    rlvr.add_argument("--learning-rate", type=float, default=1e-5)
+    rlvr.add_argument("--device", default="auto")
+    rlvr.add_argument("--seed", type=int, default=7)
 
     audit = commands.add_parser(
         "audit-corpus",
@@ -307,6 +327,11 @@ def build_parser() -> argparse.ArgumentParser:
     scale_corpus.add_argument("base_corpus")
     scale_corpus.add_argument("output")
     scale_corpus.add_argument("--generation-mode", choices=("graph", "templates"), default="graph")
+    scale_corpus.add_argument("--graph-training-mode", choices=("trajectories", "steps"), default="trajectories")
+    scale_corpus.add_argument("--trajectory-step-penalty", type=float, default=0.01)
+    scale_corpus.add_argument("--candidate-limit", type=int, default=16)
+    scale_corpus.add_argument("--sampling-mode", choices=("balanced", "natural"), default="balanced")
+    scale_corpus.add_argument("--no-shortcuts", action="store_true")
     scale_corpus.add_argument("--graph-steps", type=int, default=200)
     scale_corpus.add_argument("--max-proof-depth", type=int, default=12)
     scale_corpus.add_argument("--instance-probability", type=float, default=0.10)
@@ -355,7 +380,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--gradient-accumulation-steps", type=int, default=4
     )
     scale_train.add_argument("--learning-rate", type=float, default=1e-4)
-    scale_train.add_argument("--candidate-loss-weight", type=float, default=0.0)
+    scale_train.add_argument("--candidate-loss-weight", type=float, default=0.25)
     scale_train.add_argument("--warmup-steps", type=int, default=10)
     scale_train.add_argument("--device", default="auto")
     scale_train.add_argument("--d-model", type=int, default=768)
@@ -406,6 +431,11 @@ def main(argv: list[str] | None = None) -> int:
             CorpusBuildConfig(
                 seeds=_seeds(args.seeds),
                 generation_mode=args.generation_mode,
+                graph_training_mode=args.graph_training_mode,
+                trajectory_step_penalty=args.trajectory_step_penalty,
+                candidate_limit=args.candidate_limit,
+                sampling_mode=args.sampling_mode,
+                shorten_trajectories=not args.no_shortcuts,
                 graph_instance_probability=args.instance_probability,
                 graph_partial_premise_probability=args.partial_premise_probability,
                 steps_per_seed=args.steps_per_seed,
@@ -642,6 +672,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(summary, ensure_ascii=False))
         return 0
+    if args.command == "train-rlvr":
+        from .rlvr import RLVRConfig, train_rlvr
+        report = train_rlvr(args.checkpoint, args.corpus, args.database, args.output,
+            RLVRConfig(groups=args.groups, group_size=args.group_size, max_steps=args.max_steps,
+                       candidate_limit=args.candidate_limit, seconds_per_rollout=args.seconds_per_rollout,
+                       learning_rate=args.learning_rate, device=args.device, seed=args.seed,
+                       external_verifier=args.external_verifier))
+        print(json.dumps(report, ensure_ascii=False))
+        return 0
     if args.command == "collect-replay":
         from .rl import (
             ReplayCollectionConfig,
@@ -654,6 +693,8 @@ def main(argv: list[str] | None = None) -> int:
             args.database,
             args.output,
             ReplayCollectionConfig(
+                external_verifier=args.external_verifier,
+                verification_timeout=args.verification_timeout,
                 examples=args.examples,
                 simulations=args.simulations,
                 max_depth=args.max_depth,
@@ -709,6 +750,11 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             ScaleCorpusConfig(
                 generation_mode=args.generation_mode,
+                graph_training_mode=args.graph_training_mode,
+                trajectory_step_penalty=args.trajectory_step_penalty,
+                candidate_limit=args.candidate_limit,
+                sampling_mode=args.sampling_mode,
+                shorten_trajectories=not args.no_shortcuts,
                 graph_steps=args.graph_steps,
                 graph_max_proof_depth=args.max_proof_depth,
                 graph_instance_probability=args.instance_probability,
