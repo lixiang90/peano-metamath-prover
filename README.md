@@ -17,6 +17,10 @@ The isolated [v2](v2/README.md) adds RoPE decoder-only models, a causal lemma
 encoder, a verified theorem library, explicit scratchpad agents, standard next-token
 pretraining, and RLVR. It keeps the same PA+ kernel and does not migrate v1 checkpoints.
 
+The separate [v2.1 ATP integration](v2_1/README.md) combines Vampire with
+Metamath-checked reconstruction, traditional induction and a frozen-model fallback.
+It preserves v1/v2 and provides a self-generated equal-budget diagnostic benchmark.
+
 Data generation now defaults to random proof graphs shared by v1, HTPS, Scale, and
 v2: compose source or derived rules through automatic unification, with a 10%
 auxiliary instantiation probability. Scale generates fresh graphs instead of
@@ -36,6 +40,7 @@ is available with `--mode generic`; the default algorithm and training pipelines
 | Search backends | `neural_prover`, `htps_prover.hypergraph` | Best-first / PUCT-MCTS over multi-goal states, or HTPS over shared AND/OR goal nodes |
 | Certification | Shared environment and certificate verifier | Replay against the source library; optional mandatory external Metamath verification |
 | V2 proof agent | `v2/pa_prover_v2` | Causal LM with in-context lemma vectors; NTP/SFT/RLVR and verified scratchpad actions |
+| V2.1 ATP orchestration | `v2_1/pa_prover_v21` | Vampire, proof reconstruction, conventional induction and frozen-model comparison |
 
 MCTS and HTPS share mathematical semantics, but are not just different numeric parameters:
 their search structures and replay targets differ. Existing CLI and dataset formats remain
@@ -88,7 +93,7 @@ python -m pytest
 If PyTorch is already installed, no reinstall is needed for source-tree testing:
 
 ```powershell
-$env:PYTHONPATH='src;v2'
+$env:PYTHONPATH='src;v2;v2_1'
 python -m pytest
 ```
 

@@ -29,9 +29,10 @@ peano-neural-prover = "neural_prover.cli:main"
 peano-htps = "htps_prover.cli:main"
 pa-plus-compile = "metamath_generator.definitions:main"
 pa-prover-v2 = "pa_prover_v2.cli:main"
+pa-prover-v21 = "pa_prover_v21.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src", "v2"]
+where = ["src", "v2", "v2_1"]
 include = ["metamath_generator*", "neural_prover*", "htps_prover*", "pa_prover_v2*"]
 
 [tool.setuptools.data-files]
@@ -40,8 +41,9 @@ include = ["metamath_generator*", "neural_prover*", "htps_prover*", "pa_prover_v
 "share/peano-metamath-prover/docs" = ["docs/*.md"]
 "share/peano-metamath-prover/v2" = ["v2/README.md"]
 "share/peano-metamath-prover/v2/docs" = ["v2/docs/*.md"]
+"share/peano-metamath-prover/v2_1" = ["v2_1/README.md"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "v2/tests"]
-pythonpath = ["src", "v2"]
+testpaths = ["tests", "v2/tests", "v2_1/tests"]
+pythonpath = ["src", "v2", "v2_1"]
 addopts = "-ra"
