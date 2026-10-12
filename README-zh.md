@@ -15,8 +15,9 @@ PA+、MCTS、HTPS、中间引理和连续潜在推理统一在 `main` 维护，�
 已认证定理库、显式草稿纸 Agent、标准下一 token 预训练与 RLVR。
 新版本复用 PA+ 内核；不迁移 v1 检查点。
 
-独立的 [v2.1](v2_1/README.md) 接入 Vampire、Metamath 证书重建、传统归纳和冻结模型回退，
-提供自生成题目的同预算诊断测试；保留 v1、v2，不新增训练任务。
+独立的 [v2.1](v2_1/README.md) 接入 Vampire、Metamath 证书重建和高层归纳／引理策略，
+新增专用自生成轨迹、NTP／多正例 SFT、专家迭代和 RLVR 入口；保留 v1、v2 及原冻结模型评测。
+训练必须显式启动，本次实现只做少量更新联调，未进行完整训练。
 
 ## 1. 系统组成
 
@@ -28,7 +29,7 @@ PA+、MCTS、HTPS、中间引理和连续潜在推理统一在 `main` 维护，�
 | 搜索后端 | `neural_prover`、`htps_prover.hypergraph` | 多目标状态上的 best-first / PUCT-MCTS，或共享 AND/OR 目标节点上的 HTPS |
 | 认证 | 共享环境与证书验证器 | 对源库重放；可选强制外部 Metamath 验证 |
 | V2 证明 Agent | `v2/pa_prover_v2` | 因果语言模型与上下文引理向量；NTP/SFT/RLVR 和可验证草稿纸动作 |
-| V2.1 ATP 调度 | `v2_1/pa_prover_v21` | Vampire、证书重建、传统归纳和冻结模型比较 |
+| V2.1 ATP 与高层策略 | `v2_1/pa_prover_v21` | 认证 ATP、高层归纳与引理、自生成 NTP/SFT/RLVR 及同预算比较 |
 
 MCTS 和 HTPS 共享数学语义，但并非仅有数值参数不同：搜索结构和回放目标也不同。
 现有 CLI 与数据格式保留为可选工作流。PA+ 目录驱动生成已接入 `build-corpus`，

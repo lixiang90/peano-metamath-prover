@@ -1,7 +1,97 @@
-# PA+ v2.1: certified classical ATP and frozen-model orchestration
+# PA+ v2.1: certified ATP and high-level neural proof strategies
 
 This independent package leaves all v1 (`src/neural_prover`) and v2
-(`v2/pa_prover_v2`) implementations unchanged. It contains **no training command**.
+(`v2/pa_prover_v2`) implementations unchanged. The historical frozen-model
+comparison is retained. New commands implement a separate macro policy,
+self-generated curriculum, NTP/SFT, expert iteration and RLVR. No command starts
+training implicitly; training and expert iteration require explicit invocation.
+
+## High-level strategy workflow
+
+Classical proof-producing closure alternates with a bounded high-level search.
+The available actions are `INDUCT` (optionally generalizing object parameters),
+`HAVE`, `STRENGTHEN`, `USE` and `UNFOLD`. States contain **all** remaining goals,
+their local assumptions, types, distinct-variable constraints and remaining
+budget. HAVE continuations stay blocked until the lemma is proved. A strengthened
+statement creates two obligations: prove it, and prove that it implies the old
+goal. No proposal becomes an axiom. Each branch owns its fresh-variable context.
+
+The initial policy is a fresh RoPE/RMSNorm/SwiGLU autoregressive Transformer with
+a budget-conditioned value head and fixed UTF-8 byte vocabulary. Candidate
+continuations share a prompt KV cache. The decoder assigns sequence likelihoods
+to a **bounded typed action grammar**; a small uniform exploration mixture is
+included in the actual categorical policy. The current implementation does not
+generate arbitrary unbounded auxiliary formulas. Lemmas are retrieved as text
+from a frozen, proof-carrying symbolic library. A bidirectional lemma encoder and
+Loop Transformer are deferred until this baseline is measured.
+
+Data generation combines existing random proof graphs and small arithmetic
+conjectures grouped by finite evaluations. Numeric agreement proposes a problem;
+only Metamath verification proves it. Expression-size strata retain bootstrap
+problems. Cases are split before teacher searches, grouping normalized statements,
+conclusions, formula skeletons and graph ancestry. Unsolved proposals remain in
+the evaluation population. This guards the recorded families, not every possible
+semantic equivalence or common proof pattern.
+
+The teacher records complete macro trajectories. Verified alternatives at the
+same state form multi-positive targets. Equal-budget forced-action trials record
+the marginal gain over classical closure, including the cost of proving a new
+lemma. Randomized rollouts separately estimate initial-state completion frequency;
+verifier failures and context overflow are censored. A timeout is zero **only for
+the event “this solver completes within this budget”**, never a proof of falsity.
+The first round estimates the random policy; model-driven rounds recalibrate on
+the frozen learned policy. This value head is a heuristic, not a proof oracle.
+
+NTP uses ordinary next-token cross entropy over complete synthetic sequences.
+SFT combines multi-positive categorical likelihood, action-token likelihood and
+separately sampled value examples. Sampling weights balance observed difficulty,
+operator structure and premise count. RLVR samples one trajectory per rollout,
+uses official complete-proof rewards and stores the exact action distribution.
+Its clipped policy objective and reference KL use that same candidate set and
+temperature. Best-first teacher traces cannot be used as on-policy PPO samples.
+Zero-advantage groups produce no policy update. Context overflow is reported;
+unsolved goals are never silently truncated.
+
+All commands below use fresh output directories. They are examples, **not** a
+recommendation to start a full training run without first auditing a pilot corpus.
+PowerShell accepts each example as one line.
+
+```text
+python -m pa_prover_v21 generate-strategy formal/peano-pa-plus.mm outputs/v21-strategy --metamath outputs/tools/metamath/metamath.exe --count 24 --seconds 10 --trials 4 --counterfactuals 4
+python -m pa_prover_v21 audit-strategy formal/peano-pa-plus.mm outputs/v21-strategy --metamath outputs/tools/metamath/metamath.exe
+python -m pa_prover_v21 train-policy formal/peano-pa-plus.mm outputs/v21-strategy outputs/v21-ntp --stage ntp --steps 100 --device cuda
+python -m pa_prover_v21 train-policy formal/peano-pa-plus.mm outputs/v21-strategy outputs/v21-sft --stage sft --steps 100 --device cuda --checkpoint outputs/v21-ntp/policy.pt
+python -m pa_prover_v21 rlvr formal/peano-pa-plus.mm outputs/v21-strategy outputs/v21-rlvr --metamath outputs/tools/metamath/metamath.exe --checkpoint outputs/v21-sft/policy.pt --groups 10 --group-size 4 --seconds 10 --device cuda
+python -m pa_prover_v21 evaluate-strategy formal/peano-pa-plus.mm outputs/v21-strategy outputs/v21-comparison --metamath outputs/tools/metamath/metamath.exe --vampire outputs/tools/vampire-5.0.0/vampire.exe --checkpoint outputs/v21-sft/policy.pt --methods atp,induction,heuristic,random,learned --split test --seconds 10 --device cuda
+python -m pa_prover_v21 expert-iterate formal/peano-pa-plus.mm outputs/v21-round2 --metamath outputs/tools/metamath/metamath.exe --checkpoint outputs/v21-sft/policy.pt --count 24 --steps 100 --seconds 10 --device cuda
+python -m pa_prover_v21 promote-library formal/peano-pa-plus.mm outputs/v21-strategy outputs/v21-library --metamath outputs/tools/metamath/metamath.exe
+```
+
+`generate-strategy --checkpoint` uses both heuristic and frozen learned teachers.
+`expert-iterate` performs one generation/audit/SFT/library-promotion round. Pass
+`--library` explicitly to the next generation round to accumulate prior proved
+training lemmas. Promotion never reads validation/test proofs. Old split
+assignments persist in checkpoint provenance; conflicting ancestry or training
+overlap is rejected. Evaluation freezes the library and checks checkpoint overlap.
+Tiny grouped corpora may have empty validation/test splits: enlarge the proposal
+pool, rather than moving training examples into the test set.
+
+`prove-strategy SOURCE CASE.json OUTPUT --metamath PATH` accepts one serialized
+case in the `cases.jsonl` schema, with optional `--policy learned --checkpoint`.
+`evaluate-strategy` compares classical-only closure, conventional induction, and
+heuristic/random/learned macro policies under the same wall budget. The latter
+three share the action generator, limits and library. Verification and export
+count toward the budget; workers have an external watchdog. The legacy `evaluate`
+command retains the old frozen-v1 comparison with its original meaning.
+Classical-only and conventional-induction arms also retrieve and replay the same
+certified library, so the learned arm has no exclusive historical knowledge.
+
+Checkpoints include optimizer state for inspection, but `--checkpoint` currently
+warm-starts weights with a fresh optimizer; exact optimizer-resume is not claimed.
+Artifacts (`live.json`, traces, certificates, checksums and reports) stay in
+ignored `outputs/`. No generated theorem, model weight or executable is committed.
+
+## Restricted ATP bridge and historical benchmark
 
 The initial backend is Vampire. Supported formulas contain natural-number terms
 `0,S,+,*`, equality/order atoms, conjunction, implication, universal quantifiers,
@@ -19,7 +109,7 @@ Hilbert-logic plumbing, quantifier instantiation and induction. The official C
 Metamath verifier checks the entire generated DAG; a prover claim alone never
 counts as success. No new mathematical axioms or human theorem library is loaded.
 
-Four arms share an end-to-end wall-clock budget:
+The historical `evaluate` command has four arms sharing an end-to-end budget:
 
 * `atp`: Vampire, followed by reconstruction only if Vampire claims a proof.
 * `induction`: a short Vampire attempt, then conventional single-variable PA
@@ -27,8 +117,8 @@ Four arms share an end-to-end wall-clock budget:
 * `model`: the existing frozen v1 checkpoint, bounded legal-candidate best-first
   search; this is not a retrained high-level policy or a reproduction of old MCTS scores.
 * `hybrid`: short ATP and reconstruction first; the same frozen model handles
-  remaining unsolved work. High-level learned induction/lemma synthesis remains
-  future work and is not claimed by this initial integration.
+  remaining unsolved work. The separate macro workflow above is the new
+  high-level policy; this historical arm still uses the unchanged frozen adapter.
 
 Timing includes translation, search, reconstruction, export and official
 verification. Source/model loading is excluded consistently. A process watchdog

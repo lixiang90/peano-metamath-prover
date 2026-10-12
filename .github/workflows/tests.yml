@@ -94,6 +94,9 @@ jobs:
           assert "pa_prover_v2/rlvr.py" in names
           assert "pa_prover_v21/engine.py" in names
           assert "pa_prover_v21/kernel.py" in names
+          assert "pa_prover_v21/strategy.py" in names
+          assert "pa_prover_v21/policy.py" in names
+          assert "pa_prover_v21/training.py" in names
           assert any(name.endswith("/v2/docs/development-plan.md") for name in names)
           assert any(name.endswith("/v2_1/README.md") for name in names)
           PY

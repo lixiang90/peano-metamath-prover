@@ -59,6 +59,9 @@ class Builder:
         self._cache = {}
         self._deductions = {}
         self._hypotheses = {}
+        self._floating = {v: (v, t) for v, t in self.types.items()}
+        self._syntax = _SyntaxCompiler(TheoremDatabase(database), self._floating)
+        self._syntax.compile = lru_cache(maxsize=65536)(self._syntax.compile)
 
     def fresh(self):
         i = 0
@@ -67,7 +70,11 @@ class Builder:
         name = f"zzv{i}"
         self.distinct.update(tuple(sorted((name, old))) for old in self.types)
         self.types[name] = "var"
+        self._floating[name] = (name, "var")
         return N(name)
+
+    def check_type(self, formula, typecode="wff"):
+        self._syntax.compile(typecode, formula)
 
     def hyp(self, formula):
         if formula not in self._hypotheses:
@@ -78,12 +85,22 @@ class Builder:
         assertion = self.db.logical_assertions[rule]
         if assertion.kind == "theorem":
             raise ValueError("source human theorem libraries are not accepted")
+        key = (rule, tuple(sorted(subst.items())), parents)
+        if key in self._cache:
+            return self._cache[key]
+        if set(subst) != set(assertion.variable_types):
+            raise ValueError(f"incomplete substitution for {rule}")
+        for variable, typ in assertion.variable_types.items():
+            self.check_type(subst[variable], typ)
+        from metamath_generator.compose import _instantiate_constraints_simultaneous
+        needed = _instantiate_constraints_simultaneous(assertion.d_constraints, subst, set(self.types))
+        if not needed <= self.distinct:
+            raise ValueError(f"missing distinct-variable conditions for {rule}")
         expected = tuple(substitute_simultaneous(h.expr, subst).args[0]
                          for h in assertion.hypotheses)
         if expected != tuple(p.formula for p in parents):
             raise ValueError(f"premise mismatch for {rule}")
         formula = substitute_simultaneous(assertion.conclusion, subst).args[0]
-        key = (rule, tuple(sorted(subst.items())), parents)
         if key not in self._cache:
             self._cache[key] = Evidence(formula, rule, subst, parents,
                                        frozenset().union(*(p.assumptions for p in parents)))
@@ -270,6 +287,17 @@ class Builder:
         truth = self.refl(N("0"))
         return self.mp(truth, self.ax("alpha_2", {
             "phi": truth.formula, "chi": p.formula, "x": x}, self.lift(p, truth.formula)))
+
+    def rename_forall(self, formula, fresh):
+        """Closed alpha-equivalence, safe even under assumptions containing x."""
+        if formula.op != "forall": raise ValueError("universal formula expected")
+        x,body=formula.args
+        if fresh in set(formula.walk()):raise ValueError("alpha-renaming requires a fresh binder")
+        h=self.hyp(eq(x,fresh))
+        equivalent=self.deduct(h.formula,self.formula_subst(body,x,fresh,h))
+        premise=self.forall_intro(x,self.forall_intro(fresh,equivalent))
+        return self.mp(premise,self.ax("alpha_3",{"x":x,"y":fresh,"phi":body,
+            "psi":replace(body,x,fresh),"quant":N("forall")}))
 
     def arithmetic(self, rule, subst):
         """Instantiate var-typed PA axioms via proved universal elimination."""

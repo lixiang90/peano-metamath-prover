@@ -91,7 +91,10 @@ class Reconstructor:
         if goal.op == "forall":
             x, body = goal.args
             if any(x in set(a.walk()) for p in facts for a in p.assumptions):
-                return None
+                fresh=self.b.fresh()
+                bridge=self.b.rename_forall(goal,fresh)
+                p=self.solve(bridge.formula.args[1],facts,depth+1)
+                return self.b.mp(p,self.b.iff_dir(bridge,1)) if p else None
             p = self.solve(body, facts, depth+1)
             return self.b.forall_intro(x, p) if p else None
         expanded = list(facts)
@@ -118,11 +121,23 @@ class Reconstructor:
                     candidates = [self.b.mp(minor, p)]
                 elif p.formula.op == "forall" and p.formula.args[1].op != "forall":
                     for t in sorted(terms, key=str)[:16]:
-                        if p.formula.args[0] not in set(t.walk()):
-                            try:
-                                candidates.append(self.b.forall_elim(p, t))
-                            except ValueError:
-                                pass
+                        try:
+                            universal=p
+                            if p.formula.args[0] in set(t.walk()):
+                                # Source $d forbids direct instantiation using
+                                # the binder itself. Prove an alpha-renamed
+                                # universal first; this is needed when a
+                                # generalized IH is specialized at its old
+                                # parameter name. No textual capture is used.
+                                cache=getattr(self.b,"_renamed_quantifiers",None)
+                                if cache is None:cache={};self.b._renamed_quantifiers=cache
+                                if p not in cache:
+                                    fresh=self.b.fresh()
+                                    cache[p]=self.b.forall_intro(fresh,self.b.forall_elim(p,fresh))
+                                universal=cache[p]
+                            candidates.append(self.b.forall_elim(universal, t))
+                        except ValueError:
+                            pass
                 for q in candidates:
                     if q.formula == goal:
                         return q
