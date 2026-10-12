@@ -21,6 +21,9 @@ The separate [v2.1 ATP integration](v2_1/README.md) combines Vampire with
 Metamath-checked reconstruction and a new high-level induction/lemma policy.
 It preserves v1/v2 and the frozen-model benchmark, and adds dedicated self-generated
 macro trajectories, NTP/multi-positive SFT, expert iteration and RLVR entrypoints.
+Optional [B/C modes](docs/v21-symbolic-scratchpad.md) add structured execution
+feedback, continuous trajectory training, and bounded trials with rollback and
+scratchpad memory. The original A policy remains the default comparison baseline.
 
 Data generation now defaults to random proof graphs shared by v1, HTPS, Scale, and
 v2: compose source or derived rules through automatic unification, with a 10%

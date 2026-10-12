@@ -6,6 +6,30 @@ comparison is retained. New commands implement a separate macro policy,
 self-generated curriculum, NTP/SFT, expert iteration and RLVR. No command starts
 training implicitly; training and expert iteration require explicit invocation.
 
+## Optional structured feedback and scratchpads (B/C)
+
+`--reasoning-mode baseline` keeps the original A policy and search as the default.
+`feedback` (B) supplies role-delimited, continuous ENGINE/MODEL transcripts with
+real execution feedback. `scratchpad` (C) also offers one-macro TRY trials,
+COMMIT/BACKTRACK and bounded attempt memory. A rollback restores the parent scope;
+attempt records never become facts. Trial closure defaults to 0.25 seconds,
+at most 4 trials and 24 interaction commands per trajectory, all charged to the
+same total proof budget. Source axioms and mathematical action proposals are unchanged.
+
+For B/C, NTP trains on whole successful interaction streams. SFT includes a
+MODEL-only trajectory loss, multi-positive candidate loss, and value examples.
+RLVR inherits the corpus mode and accounts for every sampled control command.
+Official root verification remains the reward gate. Oversized complete histories
+are reported rather than truncated. The implementation still scores bounded
+commands; arbitrary formula generation and recursive latent reasoning are deferred.
+
+Generation, proof and expert-iteration commands accept `--reasoning-mode`.
+Training reads the mode from the corpus manifest. Evaluation accepts suffixed
+arms such as `heuristic-a,heuristic-b,heuristic-c` and `learned-a,learned-b,learned-c`,
+with `--checkpoint`, `--checkpoint-feedback`, `--checkpoint-scratchpad` for separate
+weights. All arms use the same frozen cases/library and end-to-end wall budget.
+See [the protocol, audit rules and commands](../docs/v21-symbolic-scratchpad.md).
+
 ## High-level strategy workflow
 
 Classical proof-producing closure alternates with a bounded high-level search.

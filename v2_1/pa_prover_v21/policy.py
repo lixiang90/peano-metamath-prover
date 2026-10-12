@@ -60,6 +60,9 @@ class Block(nn.Module):
 
 
 def prompt(observation):
+    if observation.get("protocol") == "v21-interaction-1":
+        from .interaction import render
+        return render(observation["events"], awaiting_model=True)
     return "STATE\n"+json.dumps(observation,sort_keys=True,separators=(",",":"))+"\nACTION\n"
 
 
@@ -91,6 +94,25 @@ class MacroPolicy(nn.Module):
         if prefix:labels[:,:len(self.tokenizer.encode(prefix))]=-100
         return F.cross_entropy(logits.flatten(0,1),labels.flatten(),ignore_index=-100)
 
+    def trajectory_loss(self, events, *, model_only=False):
+        from .interaction import segments
+        parts = segments(events)
+        text = "".join(s for s, _ in parts)
+        ids = self.ids(text, bos=True, eos=True)
+        logits, _, _ = self(ids[:, :-1])
+        labels = ids[:, 1:].clone()
+        if model_only:
+            labels.fill_(-100)
+            offset = 0
+            for content, supervised in parts:
+                size = len(self.tokenizer.encode(content))
+                if supervised:
+                    labels[:, offset:offset+size] = ids[:, offset+1:offset+size+1]
+                offset += size
+            if not (labels != -100).any():
+                raise ValueError("trajectory contains no model decisions")
+        return F.cross_entropy(logits.flatten(0,1), labels.flatten(), ignore_index=-100)
+
     def distribution(self,observation,actions,temperature=1.,*,grad=False):
         if not actions or temperature<=0:raise ValueError("nonempty candidates and positive temperature required")
         if len(set(actions))!=len(actions):raise ValueError("duplicate action candidates")
@@ -98,7 +120,7 @@ class MacroPolicy(nn.Module):
             logits,value,cache=self(self.ids(prompt(observation),bos=True))
             scores=[]
             for a in actions:
-                ids=self.ids(a,eos=True)
+                ids=self.ids(a+"\n") if observation.get("protocol")=="v21-interaction-1" else self.ids(a,eos=True)
                 continuation,_,_=self(ids[:,:-1],cache)
                 predictions=torch.cat((logits[:,-1:],continuation),dim=1)
                 lp=F.log_softmax(predictions.float(),-1).gather(-1,ids.unsqueeze(-1)).sum()

@@ -27,12 +27,20 @@ class SearchConfig:
     stochastic: bool = False
     temperature: float = 1.
     verification_reserve: float = .2
+    reasoning_mode: str = "baseline"
+    trial_seconds: float = .25
+    max_trials: int = 4
+    max_interactions: int = 24
 
     def validate(self):
         if min(self.seconds,self.closure_seconds,self.temperature) <= 0:
             raise ValueError("budgets and temperature must be positive")
         if min(self.max_expansions,self.max_depth,self.max_candidates,self.max_nodes) < 1:
             raise ValueError("search limits must be positive")
+        if self.reasoning_mode not in {"baseline","feedback","scratchpad"}:
+            raise ValueError("unknown reasoning mode")
+        if self.trial_seconds<=0 or self.max_trials<0 or self.max_interactions<1:
+            raise ValueError("invalid interaction limits")
 
 
 def proposals(task, builder, limit=8):
@@ -161,6 +169,10 @@ def search(database,source,target,output,metamath,*,config=None,policy="heuristi
     log probabilities. Best-first search is used for evaluation, not PPO data.
     """
     cfg=config or SearchConfig();cfg.validate()
+    if cfg.reasoning_mode!="baseline" and policy not in {"atp","induction"}:
+        from .interactive_search import interactive_search
+        return interactive_search(database,source,target,output,metamath,config=cfg,policy=policy,
+            model=model,library=library,vampire=vampire,forced=forced,return_session=return_session)
     if policy not in {"atp","induction","heuristic","random","learned"}:raise ValueError("unknown policy")
     if policy=="learned" and model is None:raise ValueError("learned policy requires model")
     if model is not None and model.provenance.get("source"):

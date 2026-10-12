@@ -119,7 +119,8 @@ def preserve_splits(cases,model):
 
 
 def generate(source,output,metamath,*,count=24,seed=21,seconds=5.,graph_steps=100,
-             trials=2,counterfactuals=4,library=None,vampire=None,model=None):
+             trials=2,counterfactuals=4,library=None,vampire=None,model=None,
+             reasoning_mode="baseline",trial_seconds=.25,max_trials=4,max_interactions=24):
     if count<1 or trials<2 or counterfactuals<0:raise ValueError("positive count and at least two value trials required")
     out=Path(output)
     if out.exists():raise ValueError("use a fresh corpus directory")
@@ -135,7 +136,9 @@ def generate(source,output,metamath,*,count=24,seed=21,seconds=5.,graph_steps=10
             raise ValueError("frozen library overlaps held-out proposal families")
     (out/"cases.jsonl").write_text("".join(json.dumps(c)+"\n" for c in cases),encoding="utf-8")
     memory.save(out/"library.json",source)
-    examples=[];outcomes=[];cfg=SearchConfig(seconds=seconds,seed=seed)
+    examples=[];outcomes=[];cfg=SearchConfig(seconds=seconds,seed=seed,reasoning_mode=reasoning_mode,
+        trial_seconds=trial_seconds,max_trials=max_trials,max_interactions=max_interactions)
+    cfg.validate()
     for ci,c in enumerate(cases):
         t=from_record(c,db);directory=out/"proofs"/c["id"]
         baseline=search(db,source,t,directory/"baseline",metamath,config=cfg,policy="atp",library=memory,vampire=vampire)
@@ -172,7 +175,7 @@ def generate(source,output,metamath,*,count=24,seed=21,seconds=5.,graph_steps=10
                      model=model,library=memory,vampire=vampire)
             sampled.append(r)
             if r["certified"]:successes.append(r)
-        depth=min((len(r["trace"]) for r in successes),default=None)
+        depth=min((r.get("macro_depth",len(r["trace"])) for r in successes),default=None)
         difficulty="atp_easy" if baseline["certified"] else "macro_solved" if successes else "budget_unsolved"
         structure=",".join(sorted({n.op for n in t.conclusion.walk() if n.args}))
         meta={"case":c["id"],"group":c["group"],"split":c["split"],"difficulty":difficulty,
@@ -180,7 +183,7 @@ def generate(source,output,metamath,*,count=24,seed=21,seconds=5.,graph_steps=10
         grouped={}
         for r in successes:
             for step in r["trace"]:
-                key=digest([step["state_key"],step["candidates"]])
+                key=digest([step["observation"] if reasoning_mode!="baseline" else step["state_key"],step["candidates"]])
                 if key not in grouped:grouped[key]={**meta,"kind":"policy","observation":step["observation"],
                     "candidates":step["candidates"],"positives":[],"evidence":[]}
                 e=grouped[key]
@@ -189,10 +192,17 @@ def generate(source,output,metamath,*,count=24,seed=21,seconds=5.,graph_steps=10
                 e["evidence"].append({"trace":r["trace"],"certificate_status":r["verification"]["status"],
                     "certificate":Path(r["certificate"]).relative_to(out.resolve()).as_posix()})
         examples.extend(grouped.values())
+        if reasoning_mode!="baseline":
+            unique={digest(r["interaction"]):r for r in successes}
+            for r in unique.values():
+                examples.append({**meta,"kind":"trajectory","events":r["interaction"],
+                    "result":(Path(r["certificate"]).parent/"result.json").relative_to(out.resolve()).as_posix(),
+                    "certificate":Path(r["certificate"]).relative_to(out.resolve()).as_posix()})
         valid=[r for r in sampled if usable_outcome(r)]
         if valid:
             initial=Session(db,t,memory)
-            examples.append({**meta,"kind":"value","observation":initial.observation(initial.initial,seconds),
+            initial_obs=valid[0]["initial_observation"] if reasoning_mode!="baseline" else initial.observation(initial.initial,seconds)
+            examples.append({**meta,"kind":"value","observation":initial_obs,
                 "value":sum(r["certified"] for r in valid)/len(valid),"trials":len(valid),
                 "policy":"learned-frozen-round" if model else "random-macro-v1","censored":len(sampled)-len(valid)})
         outcomes.append({**meta,"baseline":baseline["certified"],"teacher":teacher["certified"],
@@ -235,7 +245,25 @@ def read_corpus(path,source):
         if e["kind"]=="policy" and not set(e["positives"])<=set(e["candidates"]):raise ValueError("positive outside candidate set")
         if e["kind"]=="policy" and (not e.get("evidence") or any(x["certificate"] not in manifest["files"] for x in e["evidence"])):
             raise ValueError("policy target lacks a bound certificate artifact")
+        if e["kind"]=="policy" and e["observation"].get("protocol")=="v21-interaction-1":
+            supported=set()
+            for evidence in e["evidence"]:
+                filename=Path(evidence["certificate"]).with_name("result.json").as_posix()
+                if filename not in manifest["files"]:raise ValueError("policy row lacks execution evidence")
+                result=json.loads((root/filename).read_text(encoding="utf-8"))
+                if not result["certified"] or result["trace"]!=evidence["trace"]:
+                    raise ValueError("policy evidence differs from certified execution")
+                for step in result["trace"]:
+                    if step["observation"]==e["observation"] and step["candidates"]==e["candidates"]:
+                        supported.add(step["action"])
+            if not set(e["positives"])<=supported:raise ValueError("policy target has no causal execution witness")
         if e["kind"]=="value" and (not 0<=e["value"]<=1 or e["trials"]<1):raise ValueError("invalid value evidence")
+        if e["kind"]=="trajectory":
+            if e["result"] not in manifest["files"] or e["certificate"] not in manifest["files"]:
+                raise ValueError("trajectory lacks bound execution evidence")
+            result=json.loads((root/e["result"]).read_text(encoding="utf-8"))
+            if not result["certified"] or result["interaction"]!=e["events"]:
+                raise ValueError("trajectory differs from certified execution")
     return manifest,cases,examples
 
 
@@ -251,13 +279,21 @@ def audit(source,corpus,metamath):
         b.export(p,t,directory/"fragment.mm")
         if verify_bundle(directory/"fragment.mm",source,metamath,30)["status"]!="passed":raise ValueError("certificate audit failed")
         checked+=1
+    interactions=0
+    labels={c["id"]:c for c in cases}
+    memory=Library.load(root/"library.json",db,source)
     for path in (root/"proofs").glob("*/*/result.json"):
         result=json.loads(path.read_text(encoding="utf-8"))
+        if "interaction" in result:
+            from .interaction import replay_interaction
+            replay_interaction(db,from_record(labels[path.parent.parent.name],db),memory,result,SearchConfig(**manifest["search"]))
+            interactions+=1
         if not result["certified"]:continue
         fragment=path.parent/"fragment.mm"
         if verify_bundle(fragment,source,metamath,30)["status"]!="passed":raise ValueError("trajectory certificate failed")
         certificates+=1
-    report={"proof_archives_replayed":checked,"official_certificates_replayed":certificates,"examples":len(examples),"split_counts":manifest["splits"],
+    report={"proof_archives_replayed":checked,"official_certificates_replayed":certificates,"interactions_replayed":interactions,"examples":len(examples),"split_counts":manifest["splits"],
+            "continuous_trajectories":sum(e["kind"]=="trajectory" for e in examples),
             "policy_examples":sum(e["kind"]=="policy" for e in examples),
             "value_histogram":dict(Counter(str(e["value"]) for e in examples if e["kind"]=="value"))}
     (root/"audit.json").write_text(json.dumps(report,indent=2),encoding="utf-8")

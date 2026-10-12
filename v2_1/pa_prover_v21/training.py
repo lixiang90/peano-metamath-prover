@@ -26,6 +26,10 @@ def train(source,corpus,output,*,stage="sft",steps=100,seed=21,device="cpu",chec
     if stage not in {"ntp","sft"} or steps<1 or learning_rate<=0:raise ValueError("invalid training configuration")
     manifest,cases,rows=read_corpus(corpus,source)
     rows=[r for r in rows if r["split"]=="train"]
+    mode=manifest.get("search",{}).get("reasoning_mode","baseline")
+    if mode!="baseline":
+        if stage=="ntp":rows=[r for r in rows if r["kind"]=="trajectory"]
+        else:rows=[r for r in rows if r["kind"]!="trajectory" or any(e["role"]=="model" for e in r["events"])]
     if not rows:raise ValueError("no training examples; increase proposal pool without moving held-out cases")
     out=Path(output)
     if out.exists():raise ValueError("use a fresh training directory")
@@ -34,6 +38,7 @@ def train(source,corpus,output,*,stage="sft",steps=100,seed=21,device="cpu",chec
         d_model=d_model,n_heads=n_heads,n_layers=n_layers,max_seq_len=max_seq_len)).to(device)
     if model.provenance.get("source",manifest["source"])!=manifest["source"]:raise ValueError("checkpoint formal source changed")
     model.provenance["source"]=manifest["source"]
+    model.provenance["reasoning_mode"]=mode
     register_splits(model,cases)
     model.provenance.setdefault("corpora",[]).append(digest(manifest))
     optimizer=torch.optim.AdamW(model.parameters(),lr=learning_rate,weight_decay=.01)
@@ -41,7 +46,9 @@ def train(source,corpus,output,*,stage="sft",steps=100,seed=21,device="cpu",chec
     for step in range(steps):
         row=rng.choices(rows,weights=weights,k=1)[0];optimizer.zero_grad(set_to_none=True)
         try:
-            if stage=="ntp":
+            if row["kind"]=="trajectory":
+                loss=model.trajectory_loss(row["events"],model_only=stage=="sft")
+            elif stage=="ntp":
                 suffix=rng.choice(row["positives"]) if row["kind"]=="policy" else ""
                 # Conventional next-token prediction over the entire synthetic
                 # sequence. No auxiliary token mask changes pretraining NTP.
@@ -49,7 +56,11 @@ def train(source,corpus,output,*,stage="sft",steps=100,seed=21,device="cpu",chec
             elif row["kind"]=="policy":
                 lp,_=model.distribution(row["observation"],row["candidates"],grad=True)
                 pos=[row["candidates"].index(p) for p in row["positives"]]
-                loss=multi_positive_loss(lp,pos)+.2*model.sequence_loss(rng.choice(row["positives"]),prompt(row["observation"]))
+                action=rng.choice(row["positives"])
+                if mode!="baseline":
+                    auxiliary=model.trajectory_loss(row["observation"]["events"]+[{"role":"model","content":json.loads(action)}],model_only=True)
+                else:auxiliary=model.sequence_loss(action,prompt(row["observation"]))
+                loss=multi_positive_loss(lp,pos)+.2*auxiliary
             else:
                 _,v,_=model(model.ids(prompt(row["observation"]),bos=True))
                 loss=F.binary_cross_entropy_with_logits(v,torch.tensor([row["value"]],device=model.device))
@@ -61,7 +72,7 @@ def train(source,corpus,output,*,stage="sft",steps=100,seed=21,device="cpu",chec
         history.append({"step":step,"kind":row["kind"],"loss":float(loss.detach()),"case":row["case"]})
         (out/"live.json").write_text(json.dumps({"stage":stage,**history[-1],"elapsed":time.perf_counter()-started}),encoding="utf-8")
     if skipped==steps:raise ValueError("all complete states exceed context; no model update performed")
-    summary={"stage":stage,"requested_steps":steps,"updates":steps-skipped,"context_overflows":skipped,
+    summary={"stage":stage,"reasoning_mode":mode,"requested_steps":steps,"updates":steps-skipped,"context_overflows":skipped,
              "seconds":time.perf_counter()-started,"examples":len(rows),"seed":seed,"history":history,
              "full_training":False if steps<=2 else None,"library_snapshot":manifest["library_snapshot"]}
     model.save(out/"policy.pt",training=summary,optimizer=optimizer.state_dict())
@@ -103,12 +114,14 @@ def rlvr(source,corpus,output,metamath,checkpoint,*,groups=10,group_size=4,secon
          device="cpu",learning_rate=1e-5,vampire=None):
     if groups<1 or group_size<2:raise ValueError("positive groups and at least two rollouts per group required")
     manifest,all_cases,_=read_corpus(corpus,source);cases=[c for c in all_cases if c["split"]=="train"]
+    search_cfg=SearchConfig(**manifest["search"])
     if not cases:raise ValueError("no train cases")
     db=parse(source);library=Library.load(Path(corpus)/"library.json",db,source)
     model=MacroPolicy.load(checkpoint,device);register_splits(model,all_cases);reference=copy.deepcopy(model).eval()
     if model.provenance.get("source",manifest["source"])!=manifest["source"]:raise ValueError("checkpoint formal source changed")
     model.provenance["source"]=manifest["source"]
     for p in reference.parameters():p.requires_grad_(False)
+    model.provenance["reasoning_mode"]=search_cfg.reasoning_mode
     optimizer=torch.optim.AdamW(model.parameters(),lr=learning_rate);rng=random.Random(seed)
     out=Path(output)
     if out.exists():raise ValueError("use a fresh RLVR directory")
@@ -118,8 +131,9 @@ def rlvr(source,corpus,output,metamath,checkpoint,*,groups=10,group_size=4,secon
         # Freeze the actor and library for the entire rollout group.
         model.eval()
         for j in range(group_size):
+            from dataclasses import replace
             r=search(db,source,target,out/f"group-{group}"/f"rollout-{j}",metamath,
-                config=SearchConfig(seconds=seconds,seed=seed+group*group_size+j,stochastic=True),
+                config=replace(search_cfg,seconds=seconds,seed=seed+group*group_size+j,stochastic=True),
                 policy="learned",model=model,library=library,vampire=vampire)
             results.append(r)
         scored=rewards_and_advantages(results)
@@ -144,7 +158,7 @@ def rlvr(source,corpus,output,metamath,checkpoint,*,groups=10,group_size=4,secon
         torch.nn.utils.clip_grad_norm_(model.parameters(),1.);optimizer.step();updates+=1
         logs.append({"group":group,"status":"updated","loss":total,"rewards":rewards.tolist(),"actions":count})
         (out/"live.json").write_text(json.dumps(logs[-1]),encoding="utf-8")
-    summary={"groups":groups,"updates":updates,"group_size":group_size,"logs":logs,
+    summary={"groups":groups,"updates":updates,"group_size":group_size,"logs":logs,"reasoning_mode":search_cfg.reasoning_mode,
              "library_snapshot":library.fingerprint,"reward":"officially verified complete root certificate within budget"}
     model.save(out/"policy.pt",rlvr=summary,optimizer=optimizer.state_dict())
     (out/"rlvr.json").write_text(json.dumps(summary,indent=2),encoding="utf-8")
@@ -171,14 +185,16 @@ def promote(source,corpus,output,metamath):
     return {"promoted":count,"snapshot":memory.fingerprint,"entries":len(memory.entries)}
 
 
-def expert_iteration(source,output,metamath,checkpoint,*,count=24,steps=100,seconds=5.,seed=22,device="cpu",library=None,vampire=None):
+def expert_iteration(source,output,metamath,checkpoint,*,count=24,steps=100,seconds=5.,seed=22,device="cpu",library=None,vampire=None,
+                     reasoning_mode="baseline",trial_seconds=.25,max_trials=4,max_interactions=24):
     """One explicit frozen round; no implicit unbounded self-training loop."""
     from .curriculum import generate,audit
     out=Path(output)
     if out.exists():raise ValueError("use a fresh expert iteration directory")
     out.mkdir(parents=True)
     actor=MacroPolicy.load(checkpoint,device)
-    data=generate(source,out/"corpus",metamath,count=count,seconds=seconds,seed=seed,model=actor,library=library,vampire=vampire)
+    data=generate(source,out/"corpus",metamath,count=count,seconds=seconds,seed=seed,model=actor,library=library,vampire=vampire,
+        reasoning_mode=reasoning_mode,trial_seconds=trial_seconds,max_trials=max_trials,max_interactions=max_interactions)
     audit_result=audit(source,out/"corpus",metamath)
     del actor
     trained=train(source,out/"corpus",out/"training",steps=steps,seed=seed,device=device,checkpoint=checkpoint,stage="sft")

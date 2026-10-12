@@ -57,6 +57,13 @@ def main(argv=None):
     prove.add_argument("--metamath",required=True);prove.add_argument("--vampire");prove.add_argument("--library")
     prove.add_argument("--policy",choices=("atp","induction","heuristic","random","learned"),default="heuristic")
     prove.add_argument("--checkpoint");prove.add_argument("--device",default="cpu");prove.add_argument("--seconds",type=float,default=10.)
+    for parser in (gen,expert,strategy,prove):
+        parser.add_argument("--reasoning-mode",choices=("baseline","feedback","scratchpad"),default="baseline")
+        parser.add_argument("--trial-seconds",type=float,default=.25)
+        parser.add_argument("--max-trials",type=int,default=4)
+        parser.add_argument("--max-interactions",type=int,default=24)
+    strategy.add_argument("--checkpoint-feedback")
+    strategy.add_argument("--checkpoint-scratchpad")
     args=vars(p.parse_args(argv));command=args.pop("command")
     if command=="build-benchmark":
         from .data import build
@@ -101,6 +108,6 @@ def main(argv=None):
         if checkpoint:
             from .policy import MacroPolicy
             args["model"]=MacroPolicy.load(checkpoint,device)
-        args["config"]=SearchConfig(seconds=args.pop("seconds"))
+        args["config"]=SearchConfig(**{k:args.pop(k) for k in ("seconds","reasoning_mode","trial_seconds","max_trials","max_interactions")})
         result=search(db,target=target,**args)
     print(json.dumps(result,indent=2))

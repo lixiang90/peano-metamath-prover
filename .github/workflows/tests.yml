@@ -97,6 +97,9 @@ jobs:
           assert "pa_prover_v21/strategy.py" in names
           assert "pa_prover_v21/policy.py" in names
           assert "pa_prover_v21/training.py" in names
+          assert "pa_prover_v21/interaction.py" in names
+          assert "pa_prover_v21/interactive_search.py" in names
+          assert any(name.endswith("/docs/v21-symbolic-scratchpad.md") for name in names)
           assert any(name.endswith("/v2/docs/development-plan.md") for name in names)
           assert any(name.endswith("/v2_1/README.md") for name in names)
           PY
@@ -169,4 +172,6 @@ jobs:
       - name: Cross-verify v2.1 ATP reconstruction and induction
         env:
           METAMATH_EXECUTABLE: ${{ github.workspace }}/metamath
+          OMP_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
         run: python -m pytest v2_1/tests -q

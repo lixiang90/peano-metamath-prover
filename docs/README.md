@@ -27,6 +27,8 @@
 
 ## 搜索、训练与认证
 
+- [v2.1 符号草稿纸](v21-symbolic-scratchpad.md)：A/B/C 模式、结构化反馈、连续轨迹、
+  有界试探与回退、作用域隔离、执行回执审计和同预算对照。
 - [完整状态监督与 RLVR](proof-training-trajectories.md)：v1/Scale 多目标证书重放、
   同状态多正例、官方证明奖励、按成本和结构抽样，以及新旧语料兼容边界。
 - [V2 运行指南](../v2/README.md)：decoder-only RoPE、引理向量、显式 Agent、NTP/SFT/RLVR。
