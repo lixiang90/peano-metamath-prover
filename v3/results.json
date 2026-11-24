@@ -1,0 +1,390 @@
+{
+  "baseline_commit": "f0060a81bdc266dc1fd804ca309983048e72bc5f",
+  "historical_v21_2026_11_22": {
+    "evaluation_archive": "outputs/abc-261122",
+    "certified_after_linux_recheck": {
+      "atp": 13,
+      "induction": 17,
+      "learned-a": 17,
+      "learned-b": 13,
+      "learned-c": 12
+    },
+    "decision_audit": {
+      "training": {
+        "baseline": {
+          "training_cases": 96,
+          "rows_by_kind": {
+            "value": 96,
+            "policy": 8
+          },
+          "cases_with_policy_rows": 6,
+          "first_known_positive_rank": {
+            "1": 7,
+            "2": 1
+          },
+          "trajectories_with_decisions": 0,
+          "trajectories_with_backtrack": 0
+        },
+        "feedback": {
+          "training_cases": 96,
+          "rows_by_kind": {
+            "trajectory": 116,
+            "value": 96,
+            "policy": 2
+          },
+          "cases_with_policy_rows": 2,
+          "first_known_positive_rank": {
+            "1": 2
+          },
+          "trajectories_with_decisions": 2,
+          "trajectories_with_backtrack": 0
+        },
+        "scratchpad": {
+          "training_cases": 96,
+          "rows_by_kind": {
+            "trajectory": 114,
+            "value": 96,
+            "policy": 2
+          },
+          "cases_with_policy_rows": 1,
+          "first_known_positive_rank": {
+            "1": 2
+          },
+          "trajectories_with_decisions": 1,
+          "trajectories_with_backtrack": 0
+        }
+      },
+      "learned_a_first_ranking": {
+        "cases": 36,
+        "missing_detail": 0,
+        "no_recorded_ranking": 13,
+        "tied_for_first": 0,
+        "unique_top_choice_rank_in_candidate_order": {
+          "1": 23
+        },
+        "unique_top_choice_actions": {
+          "{\"goal\":0,\"kind\":\"INDUCT\",\"variable\":\"x0\"}": 7,
+          "{\"goal\":1,\"kind\":\"INDUCT\",\"variable\":\"x0\"}": 15,
+          "{\"goal\":3,\"kind\":\"INDUCT\",\"variable\":\"x0\"}": 1
+        }
+      }
+    },
+    "learned_a_sft_updates": {
+      "value": 1733,
+      "policy": 127
+    },
+    "p0004_learned_a": {
+      "root_candidates": 13,
+      "expansions": 1,
+      "fragment_p_statements": 6554
+    }
+  },
+  "paired_v21_on_2026_11_23": {
+    "evaluation_archive": "outputs/v3-20261123-paired",
+    "seed": 6122,
+    "test_cases": 36,
+    "seconds_per_problem": 4.0,
+    "frozen_library_entries": 0,
+    "cases_jsonl_sha256": "18ddd5bdeb8df9db9ef8a2b9021f2bca9bcdaf6455570915a4eaeec38f46f56a",
+    "program_and_checkpoint_sha256": {
+      "metamath": "e4d688cfdc5c168a45a8d17eca639d57e9135e65d1104e40c423b5ceddf75e18",
+      "vampire": "0b3440d733d1ae9b9c142bcbbfcf2a267e511a0098589af8d779a6280c606f58",
+      "checkpoint": "f405d80ee33877f4368566dd2448f0c7793d0bfaeffc585100e6e4816e7c7af9"
+    },
+    "by_method": {
+      "heuristic-a": {
+        "certified": 21,
+        "without_policy_step": 13
+      },
+      "learned-a": {
+        "certified": 19,
+        "without_policy_step": 13
+      },
+      "random-a": {
+        "certified": 13,
+        "without_policy_step": 13
+      }
+    },
+    "heuristic_vs_learned": {
+      "a_only": 2,
+      "b_only": 0,
+      "both": 19,
+      "mcnemar_exact_p": 0.5
+    },
+    "heuristic_only_ids": [
+      "p0136",
+      "p0184"
+    ],
+    "standalone_heuristic_repeat_certified": 20,
+    "linux_independent_replay": {
+      "official_executable_sha256": "0da4a7c821fbb9dd4df14b01ac996a91dfbdeff4830da02df453e5678b9d4240",
+      "in_budget_successes": 53,
+      "unique_fragments_passing_both_runs": 21,
+      "twice_verified_fragment_sha256_by_problem": {
+        "p0004": "0960bfeae82b1a15eed95cc17f67c2ff44387f2f71fe4eafc5554e52bba3c1c5",
+        "p0012": "f3106e530a0467ca36783ebf5d7854953b2ab5ddc76d7c4022ea382f4a6b4306",
+        "p0017": "3b41798366cd6fea8259edcc38a33da86015ed84ab1ca5f5f2a0a2a2fe5283a7",
+        "p0019": "5d5bd5091ad7562979de0ecc00dd3a96e70d7b2b0976f872c0f067637c18719c",
+        "p0031": "b871ba9927d7c09850d444878eb79d9d358d3e456e2976ee3eeecd86c7c45a2c",
+        "p0032": "6568590ff525a05bd6b5a5f681d520d28f2448f248da16f90edc6ac7f7ff2caf",
+        "p0043": "ccc57fc70bca043e2e6ec283424323aeb96ad15a35fc31ce803ecb42cbe3e342",
+        "p0064": "a98ee9503326faefb29bac67eb21cf43c654bcc87e38dfa0b9e50ed9a5603d0e",
+        "p0067": "dd535373c6ef12b2167bce823c51dc90e1d568309927181bed29a0512178e844",
+        "p0073": "6a3082a1c218d428760ac483200f0057f3ea7c4ff39e6f08133c1bee137718d8",
+        "p0076": "0016f6f1ee14316b82292f749452f39dd94320830f353a876b4386b4dfca6a97",
+        "p0083": "5a147b25500f20637286ddf7fbf369d2c9982c6aa96e1771d3c4110f90b9c2bb",
+        "p0089": "79929b05f159192caf9fe7651c06f252773e8911db30fd94170873b9ecbfba1c",
+        "p0097": "92d89dccd5fe5ebec58ba46facb7820a15d5a9fcd1312b176bb7e6650591ba14",
+        "p0112": "9c84cd128cdea141cebdd1e157dd46b850cb5f8d524ed77203bbb4e4d8a0d7ba",
+        "p0116": "073885760dd31d43d00e60a6d899125a257940965f6406b79aefa95898018e5a",
+        "p0136": "a74ac6e3e29a471a85658ffe40403cb0b2a0b838fe606ce9e44c7fc42ede2769",
+        "p0184": "eb878177392ccc53008ae0e4a1d696e4ce2eb9b5bf95c216bf6e794546f235d6",
+        "p0187": "58340febd8dfa541c5f9d211cc54623dac82550339ac1108d03abb1ef39ce641",
+        "p0195": "02ac9a5bd2d560f9d20b7f070218cafea432d51f6e305ab3bd4d539118f61779",
+        "p0201": "619f34a3a8b2a1638eded966b9b9505d75d9c38200d43fe327724f73796d72d0"
+      }
+    }
+  },
+  "tokenization": {
+    "evaluation_archive": "outputs/v3-pa-tokenizer/report.json",
+    "audit_vocabulary_sizes": {
+      "byte": 260,
+      "pa": 701,
+      "bpe": 701,
+      "bpe_512": 512,
+      "bpe_1024": 1024
+    },
+    "tokenizers_version": "0.23.2",
+    "unique_training_chunks_before_public_grammar": 647,
+    "frozen_formulas": {
+      "train": {
+        "cases": 96,
+        "distinct_atoms": 19,
+        "catalog_definition_occurrences": {
+          "pellsolution": 1,
+          "pythagorean": 1
+        }
+      },
+      "test": {
+        "cases": 36,
+        "distinct_atoms": 10,
+        "catalog_definition_occurrences": {}
+      }
+    },
+    "audit_pa_vocabulary_sha256": "d2b6a0f092934495c5075b44ce1050b15b723815f2dff1dcd4127d8ad0312c2c",
+    "file_vocabulary_size": 709,
+    "file_vocabulary_sha256": "5e723ac66a16c40a70e66e6935839d5c657c704ba6710ec472bbbf0a4a91f358",
+    "median_tokens": {
+      "heldout_conclusions": {
+        "samples": 36,
+        "byte": 28.5,
+        "pa": 11.0,
+        "bpe": 13.5,
+        "bpe_512": 13.5,
+        "bpe_1024": 13.5
+      },
+      "definition_names": {
+        "samples": 68,
+        "byte": 8.0,
+        "pa": 1.0,
+        "bpe": 3.0,
+        "bpe_512": 6.0,
+        "bpe_1024": 2.0
+      },
+      "definition_bodies": {
+        "samples": 68,
+        "byte": 50.5,
+        "pa": 14.0,
+        "bpe": 28.0,
+        "bpe_512": 32.0,
+        "bpe_1024": 25.5
+      },
+      "catalog_statements": {
+        "samples": 35,
+        "byte": 103,
+        "pa": 22,
+        "bpe": 47,
+        "bpe_512": 63,
+        "bpe_1024": 40
+      },
+      "a_first_prompt": {
+        "samples": 23,
+        "byte": 261,
+        "pa": 138,
+        "bpe": 88,
+        "bpe_512": 89,
+        "bpe_1024": 88
+      },
+      "a_changed_snapshot": {
+        "samples": 23,
+        "byte": 261,
+        "pa": 138,
+        "bpe": 107,
+        "bpe_512": 114,
+        "bpe_1024": 105
+      },
+      "a_candidate": {
+        "samples": 359,
+        "byte": 53,
+        "pa": 18,
+        "bpe": 17,
+        "bpe_512": 18,
+        "bpe_1024": 17
+      },
+      "b_first_prompt": {
+        "samples": 14,
+        "byte": 493.0,
+        "pa": 209.0,
+        "bpe": 155.0,
+        "bpe_512": 158.0,
+        "bpe_1024": 151.5
+      },
+      "b_candidate": {
+        "samples": 222,
+        "byte": 78.0,
+        "pa": 27.0,
+        "bpe": 24.0,
+        "bpe_512": 28.0,
+        "bpe_1024": 24.0
+      },
+      "c_first_prompt": {
+        "samples": 14,
+        "byte": 495.0,
+        "pa": 209.0,
+        "bpe": 155.5,
+        "bpe_512": 158.5,
+        "bpe_1024": 150.5
+      },
+      "c_candidate": {
+        "samples": 436,
+        "byte": 77.0,
+        "pa": 27.0,
+        "bpe": 24.0,
+        "bpe_512": 27.0,
+        "bpe_1024": 24.0
+      }
+    }
+  },
+  "manually_supplied_lemma_and_file_commands": {
+    "target": "|- = + + 0 x0 S 0 S x0",
+    "actions": [
+      {
+        "kind": "HAVE",
+        "goal": 0,
+        "statement": "= + 0 x0 x0"
+      },
+      {
+        "kind": "INDUCT",
+        "goal": 1,
+        "variable": "x0"
+      }
+    ],
+    "root_candidates": 17,
+    "root_have_candidates": 8,
+    "supplied_have_in_candidates": false,
+    "continuation_waited_for_lemma": true,
+    "lemma_in_final_proof": true,
+    "official_replay": "passed",
+    "official_verifier_sha256": "e4d688cfdc5c168a45a8d17eca639d57e9135e65d1104e40c423b5ceddf75e18",
+    "file_calls": 4,
+    "file_io_tokens": 157,
+    "trial_reply_tokens_saved": 76,
+    "commands_and_replies": [
+      {
+        "file_command": "FAPPEND FILE_SCRATCH wff = + 0 x0 x0",
+        "reply": {
+          "index": 0
+        }
+      },
+      {
+        "proof_command": {
+          "action": {
+            "goal": 0,
+            "kind": "HAVE",
+            "statement": "= 0 x0"
+          },
+          "op": "TRY"
+        },
+        "event": "TRY_RESULT",
+        "status": "OPEN"
+      },
+      {
+        "file_command": "FWRITE FILE_SCRATCH 0 wff = 0 x0",
+        "reply": {
+          "index": 0
+        }
+      },
+      {
+        "proof_command": {
+          "op": "BACKTRACK"
+        },
+        "event": "BACKTRACK_RESULT",
+        "status": "OPEN"
+      },
+      {
+        "file_command": "FREAD FILE_TRIALS 0 1",
+        "reply": {
+          "rows": [
+            {
+              "state": 0,
+              "action": {
+                "goal": 0,
+                "kind": "HAVE",
+                "statement": "= 0 x0"
+              },
+              "outcome": "UNKNOWN",
+              "closed_count": 0,
+              "decision": "BACKTRACK"
+            }
+          ],
+          "next": null
+        }
+      },
+      {
+        "file_command": "FREAD FILE_SCRATCH 0 1",
+        "reply": {
+          "rows": [
+            "wff = + 0 x0 x0"
+          ],
+          "next": null
+        }
+      },
+      {
+        "proof_command": {
+          "action": {
+            "goal": 0,
+            "kind": "HAVE",
+            "statement": "= + 0 x0 x0"
+          },
+          "op": "APPLY"
+        },
+        "event": "APPLY_RESULT",
+        "status": "OPEN"
+      },
+      {
+        "proof_command": {
+          "action": {
+            "goal": 1,
+            "kind": "INDUCT",
+            "variable": "x0"
+          },
+          "op": "APPLY"
+        },
+        "event": "APPLY_RESULT",
+        "status": "ROOT_READY"
+      }
+    ],
+    "matching_fragment_sha256": "b69ea2ce313e82a4abe1dd5f330a0dcebaedd899a096a959e4602a0a8570f830",
+    "fragment_lf_sha256": "76941539d5230bb9548be75250eafc4a0c06dc02417fe769741a09bd150f3f3c"
+  },
+  "lean_generation": {
+    "toolchain": "leanprover/lean4:v4.36.0",
+    "seed": 17,
+    "distinct_statements": 48,
+    "checked_proof_terms": 48,
+    "checked_tactic_replays": 48,
+    "tactic_steps": 143,
+    "frozen_goal_declarations_checked": 36,
+    "frozen_goal_with_explicit_proof": "p0004"
+  }
+}

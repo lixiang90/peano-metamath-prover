@@ -44,6 +44,6 @@ include = ["metamath_generator*", "neural_prover*", "htps_prover*", "pa_prover_v
 "share/peano-metamath-prover/v2_1" = ["v2_1/README.md"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "v2/tests", "v2_1/tests"]
+testpaths = ["tests", "v2/tests", "v2_1/tests", "v3"]
 pythonpath = ["src", "v2", "v2_1"]
 addopts = "-ra"
