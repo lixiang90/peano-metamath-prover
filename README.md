@@ -162,6 +162,7 @@ formal/                  Shared PA, number theory, PA+ library and definition ca
 src/metamath_generator/  Formal kernel, conservative definitions, synthetic generation
 src/neural_prover/       Models, MCTS, Scale, shared environments and certification
 src/htps_prover/         Forward DAG data, HTPS, latent training and synchronous replay
+v3/                      PA+ tokenizer, proof-agent prototypes and measured baselines
 tests/                   Shared-kernel and both-backend regression tests
 tools/                   Verification utilities
 docs/                    Guides, designs, audits, and historical experiment reports
@@ -170,6 +171,11 @@ outputs/                 Local data/checkpoints/reports (not tracked)
 
 The [documentation index](docs/README.md) is organized by task rather than branch.
 Most detailed design documents are currently in Chinese.
+
+The v3 work continues with PA+ and Metamath. On 36 frozen problems with four seconds per problem,
+the heuristic certified 21, the existing v2.1 model certified 19, and random ranking certified 13.
+The new tokenizer and file operations have executable prototypes. Training a policy with them is
+still open. [v3 overview and quick start](v3/README.md) · [Experiment results](v3/results.json)
 
 - Run experiments: [training and evaluation](docs/training-and-evaluation.md).
 - Understand the implementation: [architecture](docs/architecture.md),

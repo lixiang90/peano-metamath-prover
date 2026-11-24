@@ -143,6 +143,7 @@ formal/                  共享 PA、数论、PA+ 形式库与定义目录
 src/metamath_generator/  形式内核、保守定义与合成数据生成
 src/neural_prover/       模型、MCTS、Scale、共享环境与认证
 src/htps_prover/         前向 DAG 数据、HTPS、latent 训练与同步回放
+v3/                      PA+ 数学符号词表、证明交互原型及基线对照
 tests/                   共享内核及两个后端的回归测试
 tools/                   验证工具
 docs/                    使用指南、设计、审计与历史实验报告
@@ -150,6 +151,8 @@ outputs/                 本地数据/检查点/报告（不跟踪）
 ```
 
 [文档导航](docs/README.md)按任务而非分支组织资料。目前详细设计文档主要为中文。
+
+v3 沿用 PA+ 和 Metamath。在同一批 36 道冻结题、每题 4 秒的对照中，手写排序认证了 21 题，已有的 v2.1 模型认证了 19 题，随机排序认证了 13 题。新词表和文件操作已可运行，使用它们的策略模型仍待训练。[v3 总览与复现入口](v3/README.md) · [实验结果](v3/results.json)
 
 - 运行实验：[训练与评估](docs/training-and-evaluation.md)。
 - 理解实现：[系统架构](docs/architecture.md)、[HTPS](docs/htps-design.md)、
